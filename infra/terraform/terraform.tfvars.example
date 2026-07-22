@@ -1,0 +1,58 @@
+project_id      = "your-gcp-project-id"
+region          = "us-central1"
+name_prefix     = "aps-eb-oracle"
+container_image = "us-central1-docker.pkg.dev/your-gcp-project-id/integrations/aps-eb-oracle:latest"
+
+scheduler_time_zone = "America/Chicago"
+
+job_schedules = {
+  requisitions_export = "*/15 * * * *"
+  req_import          = "5,20,35,50 * * * *"
+  po_import           = "10,25,40,55 * * * *"
+}
+
+# Non-secret environment variables shared across all jobs.
+plain_env_vars = {
+  EBUILDER_BASE_URL          = "https://api2-us3.e-builder.net/api/v2/"
+  EBUILDER_TIMEOUT_SECONDS   = "30"
+  EBUILDER_VERIFY_SSL        = "true"
+  ORACLE_FTP_PROTOCOL        = "ftps"
+  ORACLE_FTP_PORT            = "21"
+  ORACLE_FTP_TIMEOUT_SECONDS = "30"
+  ORACLE_FTP_PASSIVE_MODE    = "true"
+  ORACLE_FTP_REMOTE_BASE_DIR = "/"
+}
+
+# Secret environment variables shared across all jobs.
+# Map: ENV_NAME = secret_name_in_secret_manager
+secret_env_vars = {
+  EBUILDER_USERNAME   = "ebuilder-username"
+  EBUILDER_PASSWORD   = "ebuilder-password"
+  ORACLE_FTP_HOST     = "oracle-ftp-host"
+  ORACLE_FTP_USERNAME = "oracle-ftp-username"
+  ORACLE_FTP_PASSWORD = "oracle-ftp-password"
+}
+
+# Per-job env overrides/additions.
+per_job_plain_env_vars = {
+  requisitions_export = {
+    INTEGRATION_EBUILDER_PROJECT_NAME        = "Lawson Integration"
+    INTEGRATION_EBUILDER_REQUISITIONS_FOLDER = "Documents/01 CA & DPI Exports/Oracle"
+    INTEGRATION_ORACLE_REQUISITIONS_REMOTE_DIR = "outbound/reqs"
+    INTEGRATION_REQUISITIONS_LATEST_ONLY       = "true"
+  }
+  req_import = {
+    INTEGRATION_REQ_IMPORT_ORACLE_REMOTE_DIR   = "outbound/REQ"
+    INTEGRATION_REQ_IMPORT_EBUILDER_PROJECT_NAME = "Lawson Integration"
+    INTEGRATION_REQ_IMPORT_EBUILDER_FOLDER        = "Documents/01A CA & DPI Imports/CA Import/PREQ Updated"
+    INTEGRATION_REQ_IMPORT_LATEST_ONLY            = "false"
+    INTEGRATION_REQ_IMPORT_CREATE_FOLDER          = "false"
+  }
+  po_import = {
+    INTEGRATION_PO_IMPORT_ORACLE_REMOTE_DIR   = "outbound/PO"
+    INTEGRATION_PO_IMPORT_EBUILDER_PROJECT_NAME = "Lawson Integration"
+    INTEGRATION_PO_IMPORT_EBUILDER_FOLDER        = "Documents/01A CA & DPI Imports/CA Import/PO Issued"
+    INTEGRATION_PO_IMPORT_LATEST_ONLY            = "false"
+    INTEGRATION_PO_IMPORT_CREATE_FOLDER          = "false"
+  }
+}

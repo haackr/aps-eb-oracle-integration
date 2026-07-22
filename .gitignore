@@ -211,6 +211,16 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+infra/terraform/terraform.tfvars
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
