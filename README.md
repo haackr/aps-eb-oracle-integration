@@ -1,33 +1,34 @@
 # e-Builder <-> Oracle Integration
 
-This repository contains an in-development integration service between e-Builder and Oracle FTP.
+This repository contains an in-development integration service between e-Builder and Oracle SFTP.
 
 The system runs scheduled jobs that move files in both directions:
 
-- e-Builder -> Oracle FTP exports
-- Oracle FTP -> e-Builder imports
+- e-Builder -> Oracle SFTP exports
+- Oracle SFTP -> e-Builder imports
 
 Job count and workflows will continue to evolve.
 
 ## What This Integration Does
 
 - Queries and downloads files from e-Builder.
-- Uploads and downloads files via Oracle FTP/FTPS.
+- Uploads and downloads files via Oracle SFTP.
 - Converts legacy `.xls` files to `.xlsx` when needed for imports.
 - Applies filename and folder-based routing rules.
 
 ## Architecture
 
 - `src/ebuilder_api`: e-Builder auth/query/upload/download client.
-- `src/oracle_ftp`: FTP/FTPS client for Oracle-side file transport.
+- `src/oracle_ftp`: SFTP client for Oracle-side file transport.
 - `src/integration_utils`: shared helpers, including `.xls` -> `.xlsx` conversion.
-- `src/integration_jobs`: orchestration jobs connecting e-Builder and Oracle FTP.
+- `src/integration_jobs`: orchestration jobs connecting e-Builder and Oracle SFTP.
 - `infra/terraform`: Cloud Run Jobs + Cloud Scheduler + IAM/secret wiring.
 
 ## Safety and Data Handling Rules
 
 - Import paths convert `.xls` to `.xlsx` before e-Builder upload.
 - Source files are removed from FTP only after successful upload.
+- Uploads fail if the remote directory path does not already exist.
 - Client and job layers raise explicit errors on malformed records and paths.
 
 ## Quick Start (Local)
@@ -36,7 +37,7 @@ Job count and workflows will continue to evolve.
 2. Install dependencies:
 
 ```bash
-pip install -e .[dev]
+python -m pip install -e '.[dev]'
 ```
 
 3. Copy environment template and fill values:
@@ -60,7 +61,7 @@ Core e-Builder variables:
 - `EBUILDER_PASSWORD`
 - `EBUILDER_API_TOKEN` (optional override)
 
-Core Oracle FTP variables:
+Core Oracle SFTP variables:
 
 - `ORACLE_FTP_HOST`
 - `ORACLE_FTP_USERNAME`
@@ -73,6 +74,7 @@ Job variables:
 
 - `INTEGRATION_EBUILDER_*`
 - `INTEGRATION_ORACLE_*`
+- `INTEGRATION_INVOICES_*`
 - `INTEGRATION_REQ_IMPORT_*`
 - `INTEGRATION_PO_IMPORT_*`
 
@@ -82,13 +84,16 @@ See `.env.example` for the current full variable list.
 
 ```python
 from integration_jobs import (
+    run_invoices_export_job,
     run_requisitions_export_job,
     run_req_numbers_import_job,
 )
 
+invoices_result = run_invoices_export_job()
 requisitions_result = run_requisitions_export_job()
 req_result = run_req_numbers_import_job()
 
+print(invoices_result.uploaded_count)
 print(requisitions_result.uploaded_count)
 print(req_result.uploaded_count)
 ```
@@ -110,4 +115,4 @@ Use `terraform.tfvars` to set project, image, schedules, and secret names.
 The integration jobs are built on two core clients:
 
 - `src/ebuilder_api` for e-Builder authentication, document query/upload, and file download.
-- `src/oracle_ftp` for Oracle FTP/FTPS file transfer operations.
+- `src/oracle_ftp` for Oracle SFTP file transfer operations.

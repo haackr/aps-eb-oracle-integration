@@ -14,6 +14,12 @@ locals {
       plain_env   = lookup(var.per_job_plain_env_vars, "requisitions_export", {})
       secret_env  = lookup(var.per_job_secret_env_vars, "requisitions_export", {})
     }
+    invoices_export = {
+      description = "e-Builder invoices export to Oracle FTP"
+      entrypoint  = "from integration_jobs import run_invoices_export_job; result = run_invoices_export_job(); print(result)"
+      plain_env   = lookup(var.per_job_plain_env_vars, "invoices_export", {})
+      secret_env  = lookup(var.per_job_secret_env_vars, "invoices_export", {})
+    }
     req_import = {
       description = "Oracle FTP REQ import to e-Builder"
       entrypoint  = "from integration_jobs import run_req_numbers_import_job; result = run_req_numbers_import_job(); print(result)"

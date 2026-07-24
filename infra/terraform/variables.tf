@@ -31,6 +31,7 @@ variable "job_schedules" {
   type        = map(string)
   default = {
     requisitions_export = "*/15 * * * *"
+    invoices_export     = "*/15 * * * *"
     req_import          = "5,20,35,50 * * * *"
     po_import           = "10,25,40,55 * * * *"
   }

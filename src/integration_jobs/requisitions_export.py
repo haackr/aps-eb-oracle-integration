@@ -31,8 +31,6 @@ class OracleFTPUploadPort(Protocol):
         self,
         file_bytes: bytes,
         remote_path: str,
-        *,
-        create_remote_dirs: bool = True,
     ) -> str: ...
 
 
@@ -125,7 +123,7 @@ class RequisitionsExportJob:
 
             payload = self._ebuilder.download_file_bytes(download_url)
             remote_target = posixpath.join(self._config.oracle_remote_dir.strip("/"), safe_name)
-            uploaded = self._oracle_ftp.upload_bytes(payload, remote_target, create_remote_dirs=True)
+            uploaded = self._oracle_ftp.upload_bytes(payload, remote_target)
             uploaded_paths.append(uploaded)
 
         return RequisitionsExportResult(uploaded_remote_paths=uploaded_paths)

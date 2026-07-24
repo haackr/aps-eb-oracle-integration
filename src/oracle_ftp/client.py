@@ -1,29 +1,29 @@
 from __future__ import annotations
 
-import ftplib
 import os
 import posixpath
 from io import BytesIO
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
+
+import paramiko
 
 from .exceptions import OracleFTPConnectionError, OracleFTPTransferError
 
-OracleFTPProtocol = Literal["ftp", "ftps"]
+OracleFTPProtocol = Literal["sftp"]
 
 
 @dataclass(frozen=True, slots=True)
 class OracleFTPConfig:
-    """Runtime configuration for Oracle FTP/FTPS access."""
+    """Runtime configuration for Oracle SFTP access."""
 
     host: str
     username: str
     password: str
-    protocol: OracleFTPProtocol = "ftps"
-    port: int = 21
+    protocol: OracleFTPProtocol = "sftp"
+    port: int = 22
     timeout_seconds: float = 30.0
-    passive_mode: bool = True
     remote_base_dir: str = "/"
 
     @classmethod
@@ -36,24 +36,30 @@ class OracleFTPConfig:
         - ORACLE_FTP_PASSWORD
 
         Optional:
-        - ORACLE_FTP_PROTOCOL (ftp|ftps, default: ftps)
-        - ORACLE_FTP_PORT (default: 21)
+        - ORACLE_FTP_PROTOCOL (sftp, default: sftp)
+        - ORACLE_FTP_PORT (default: 22)
         - ORACLE_FTP_TIMEOUT_SECONDS (default: 30)
-        - ORACLE_FTP_PASSIVE_MODE (true|false, default: true)
         - ORACLE_FTP_REMOTE_BASE_DIR (default: /)
         """
-        host = os.getenv("ORACLE_FTP_HOST", "").strip()
+        host_raw = os.getenv("ORACLE_FTP_HOST", "").strip()
         username = os.getenv("ORACLE_FTP_USERNAME", "").strip()
         password = os.getenv("ORACLE_FTP_PASSWORD", "").strip()
 
-        protocol_raw = os.getenv("ORACLE_FTP_PROTOCOL", "ftps").strip().lower()
-        if protocol_raw not in {"ftp", "ftps"}:
-            raise ValueError("ORACLE_FTP_PROTOCOL must be either 'ftp' or 'ftps'")
+        protocol_raw = os.getenv("ORACLE_FTP_PROTOCOL", "sftp").strip().lower()
+        if protocol_raw != "sftp":
+            raise ValueError("ORACLE_FTP_PROTOCOL must be 'sftp'")
         protocol: OracleFTPProtocol = protocol_raw
 
-        port = int(os.getenv("ORACLE_FTP_PORT", "21"))
+        host, host_port = _split_host_and_port(host_raw)
+        raw_port = os.getenv("ORACLE_FTP_PORT", "").strip()
+        if raw_port:
+            port = int(raw_port)
+        elif host_port is not None:
+            port = host_port
+        else:
+            port = 22
+
         timeout_seconds = float(os.getenv("ORACLE_FTP_TIMEOUT_SECONDS", "30"))
-        passive_mode = os.getenv("ORACLE_FTP_PASSIVE_MODE", "true").strip().lower() != "false"
         remote_base_dir = os.getenv("ORACLE_FTP_REMOTE_BASE_DIR", "/").strip() or "/"
 
         if not host:
@@ -70,23 +76,23 @@ class OracleFTPConfig:
             protocol=protocol,
             port=port,
             timeout_seconds=timeout_seconds,
-            passive_mode=passive_mode,
             remote_base_dir=remote_base_dir,
         )
 
 
 class OracleFTPClient:
-    """Lightweight FTP/FTPS client for uploading and downloading integration files."""
+    """Lightweight SFTP client for uploading and downloading integration files."""
 
     def __init__(
         self,
         config: OracleFTPConfig,
         *,
-        ftp_factory: Callable[[], ftplib.FTP] | None = None,
+        sftp_factory: Callable[[OracleFTPConfig], tuple[Any, Any]] | None = None,
     ) -> None:
         self._config = config
-        self._ftp_factory = ftp_factory
-        self._ftp: ftplib.FTP | None = None
+        self._sftp_factory = sftp_factory
+        self._transport: Any | None = None
+        self._sftp: Any | None = None
 
     def __enter__(self) -> "OracleFTPClient":
         self.connect()
@@ -96,59 +102,53 @@ class OracleFTPClient:
         self.close()
 
     def connect(self) -> None:
-        """Open FTP/FTPS connection and authenticate."""
-        if self._ftp is not None:
+        """Open SFTP connection and authenticate."""
+        if self._sftp is not None:
             return
 
-        ftp = self._build_ftp_client()
         try:
-            ftp.connect(
-                host=self._config.host,
-                port=self._config.port,
-                timeout=self._config.timeout_seconds,
-            )
-            ftp.login(user=self._config.username, passwd=self._config.password)
-            ftp.set_pasv(self._config.passive_mode)
-            if self._config.protocol == "ftps" and isinstance(ftp, ftplib.FTP_TLS):
-                ftp.prot_p()
-        except ftplib.all_errors as exc:
-            raise OracleFTPConnectionError(f"FTP connection/login failed: {exc}") from exc
+            if self._sftp_factory is not None:
+                transport, sftp = self._sftp_factory(self._config)
+            else:
+                transport = paramiko.Transport((self._config.host, self._config.port))
+                transport.banner_timeout = self._config.timeout_seconds
+                transport.connect(username=self._config.username, password=self._config.password)
+                sftp = paramiko.SFTPClient.from_transport(transport)
 
-        self._ftp = ftp
+            self._transport = transport
+            self._sftp = sftp
+        except (OSError, paramiko.SSHException) as exc:
+            raise OracleFTPConnectionError(f"SFTP connection/login failed: {exc}") from exc
 
     def close(self) -> None:
-        if self._ftp is None:
+        if self._sftp is None and self._transport is None:
             return
 
         try:
-            self._ftp.quit()
-        except ftplib.all_errors:
-            self._ftp.close()
+            if self._sftp is not None:
+                self._sftp.close()
         finally:
-            self._ftp = None
+            self._sftp = None
+            if self._transport is not None:
+                self._transport.close()
+                self._transport = None
 
     def upload_file(
         self,
         local_path: str | Path,
         remote_path: str,
-        *,
-        create_remote_dirs: bool = True,
     ) -> str:
-        """Upload a local file to remote FTP path."""
-        ftp = self._require_connection()
+        """Upload a local file to remote SFTP path."""
+        sftp = self._require_connection()
         source = Path(local_path)
         if not source.exists() or not source.is_file():
             raise OracleFTPTransferError(f"Local file does not exist: {source}")
 
         target = self._resolve_remote_path(remote_path)
-        parent_dir = posixpath.dirname(target)
-        if create_remote_dirs and parent_dir:
-            self.ensure_remote_dir(parent_dir)
 
         try:
-            with source.open("rb") as file_obj:
-                ftp.storbinary(f"STOR {target}", file_obj)
-        except (OSError, ftplib.all_errors) as exc:
+            sftp.put(str(source), target)
+        except (OSError, paramiko.SSHException) as exc:
             raise OracleFTPTransferError(f"Failed to upload {source} to {target}: {exc}") from exc
 
         return target
@@ -157,20 +157,16 @@ class OracleFTPClient:
         self,
         file_bytes: bytes,
         remote_path: str,
-        *,
-        create_remote_dirs: bool = True,
     ) -> str:
-        """Upload in-memory bytes to a remote FTP path."""
-        ftp = self._require_connection()
+        """Upload in-memory bytes to a remote SFTP path."""
+        sftp = self._require_connection()
         target = self._resolve_remote_path(remote_path)
-        parent_dir = posixpath.dirname(target)
-        if create_remote_dirs and parent_dir:
-            self.ensure_remote_dir(parent_dir)
 
-        payload = BytesIO(file_bytes)
         try:
-            ftp.storbinary(f"STOR {target}", payload)
-        except ftplib.all_errors as exc:
+            with sftp.file(target, "wb") as remote_file:
+                payload = BytesIO(file_bytes)
+                remote_file.write(payload.read())
+        except (OSError, paramiko.SSHException) as exc:
             raise OracleFTPTransferError(f"Failed to upload bytes to {target}: {exc}") from exc
 
         return target
@@ -182,8 +178,8 @@ class OracleFTPClient:
         *,
         overwrite: bool = False,
     ) -> Path:
-        """Download a remote FTP file to local disk."""
-        ftp = self._require_connection()
+        """Download a remote SFTP file to local disk."""
+        sftp = self._require_connection()
         source = self._resolve_remote_path(remote_path)
         target = Path(local_path)
 
@@ -195,35 +191,35 @@ class OracleFTPClient:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with target.open("wb") as file_obj:
-                ftp.retrbinary(f"RETR {source}", file_obj.write)
-        except (OSError, ftplib.all_errors) as exc:
+            sftp.get(source, str(target))
+        except (OSError, paramiko.SSHException) as exc:
             raise OracleFTPTransferError(f"Failed to download {source} to {target}: {exc}") from exc
 
         return target
 
     def list_files(self, remote_dir: str = ".") -> list[str]:
         """List files for a remote directory path."""
-        ftp = self._require_connection()
+        sftp = self._require_connection()
         target = self._resolve_remote_path(remote_dir)
         try:
-            return ftp.nlst(target)
-        except ftplib.all_errors as exc:
+            names = sftp.listdir(target)
+            return [posixpath.join(target, name) for name in names]
+        except (OSError, paramiko.SSHException) as exc:
             raise OracleFTPTransferError(f"Failed to list remote directory {target}: {exc}") from exc
 
     def delete_file(self, remote_path: str) -> str:
-        """Delete a remote FTP file."""
-        ftp = self._require_connection()
+        """Delete a remote SFTP file."""
+        sftp = self._require_connection()
         target = self._resolve_remote_path(remote_path)
         try:
-            ftp.delete(target)
-        except ftplib.all_errors as exc:
+            sftp.remove(target)
+        except (OSError, paramiko.SSHException) as exc:
             raise OracleFTPTransferError(f"Failed to delete remote file {target}: {exc}") from exc
         return target
 
     def ensure_remote_dir(self, remote_dir: str) -> str:
         """Create remote directory path recursively if needed."""
-        ftp = self._require_connection()
+        sftp = self._require_connection()
         target = self._resolve_remote_path(remote_dir)
 
         parts = [part for part in target.split("/") if part]
@@ -231,30 +227,25 @@ class OracleFTPClient:
         for part in parts:
             current = f"{current}/{part}"
             try:
-                ftp.mkd(current)
-            except ftplib.error_perm as exc:
-                message = str(exc).lower()
-                if "exists" in message or message.startswith("550"):
-                    continue
-                raise OracleFTPTransferError(f"Failed to create remote directory {current}: {exc}") from exc
-            except ftplib.all_errors as exc:
+                sftp.stat(current)
+            except FileNotFoundError:
+                try:
+                    sftp.mkdir(current)
+                except (OSError, paramiko.SSHException) as exc:
+                    raise OracleFTPTransferError(
+                        f"Failed to create remote directory {current}: {exc}"
+                    ) from exc
+            except (OSError, paramiko.SSHException) as exc:
                 raise OracleFTPTransferError(f"Failed to create remote directory {current}: {exc}") from exc
 
         return target
 
-    def _build_ftp_client(self) -> ftplib.FTP:
-        if self._ftp_factory is not None:
-            return self._ftp_factory()
-        if self._config.protocol == "ftps":
-            return ftplib.FTP_TLS()
-        return ftplib.FTP()
-
-    def _require_connection(self) -> ftplib.FTP:
-        if self._ftp is None:
+    def _require_connection(self) -> Any:
+        if self._sftp is None:
             self.connect()
-        if self._ftp is None:
-            raise OracleFTPConnectionError("FTP client is not connected")
-        return self._ftp
+        if self._sftp is None:
+            raise OracleFTPConnectionError("SFTP client is not connected")
+        return self._sftp
 
     def _resolve_remote_path(self, remote_path: str) -> str:
         normalized = remote_path.replace("\\", "/").strip()
@@ -274,3 +265,20 @@ class OracleFTPClient:
         if not resolved.startswith("/"):
             resolved = f"/{resolved}"
         return resolved
+
+
+def _split_host_and_port(host: str) -> tuple[str, int | None]:
+    """Extract host and optional port from ORACLE_FTP_HOST.
+
+    Supports values like "hostname" and "hostname:2222".
+    """
+    if not host or host.startswith("["):
+        return host, None
+
+    if ":" not in host:
+        return host, None
+
+    host_part, possible_port = host.rsplit(":", 1)
+    if not possible_port.isdigit():
+        return host, None
+    return host_part, int(possible_port)

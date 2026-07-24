@@ -49,16 +49,14 @@ class StubEBuilder:
 
 class StubOracleFTP:
     def __init__(self) -> None:
-        self.upload_calls: list[tuple[bytes, str, bool]] = []
+        self.upload_calls: list[tuple[bytes, str]] = []
 
     def upload_bytes(
         self,
         file_bytes: bytes,
         remote_path: str,
-        *,
-        create_remote_dirs: bool = True,
     ) -> str:
-        self.upload_calls.append((file_bytes, remote_path, create_remote_dirs))
+        self.upload_calls.append((file_bytes, remote_path))
         return f"/exports/oracle/{remote_path.strip('/')}"
 
 

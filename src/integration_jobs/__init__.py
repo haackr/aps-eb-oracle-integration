@@ -1,5 +1,12 @@
 """Integration job orchestration components."""
 
+from .invoices_export import (
+    InvoicesExportJob,
+    InvoicesExportJobConfig,
+    InvoicesExportResult,
+    run_invoices_export_job,
+    run_invoices_export_with_clients,
+)
 from .requisitions_export import (
     RequisitionsExportJob,
     RequisitionsExportJobConfig,
@@ -20,6 +27,11 @@ from .oracle_to_ebuilder_imports import (
 )
 
 __all__ = [
+    "InvoicesExportJob",
+    "InvoicesExportJobConfig",
+    "InvoicesExportResult",
+    "run_invoices_export_job",
+    "run_invoices_export_with_clients",
     "RequisitionsExportJob",
     "RequisitionsExportJobConfig",
     "RequisitionsExportResult",

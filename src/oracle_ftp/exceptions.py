@@ -4,12 +4,12 @@ from dataclasses import dataclass
 
 
 class OracleFTPError(Exception):
-    """Base exception for Oracle FTP integration errors."""
+    """Base exception for Oracle file transfer integration errors."""
 
 
 @dataclass(slots=True)
 class OracleFTPConnectionError(OracleFTPError):
-    """Raised when the FTP/FTPS connection or login fails."""
+    """Raised when the SFTP connection or login fails."""
 
     message: str
 

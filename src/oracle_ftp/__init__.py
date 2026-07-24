@@ -1,4 +1,4 @@
-"""Oracle FTP integration component."""
+"""Oracle SFTP integration component."""
 
 from .client import OracleFTPClient, OracleFTPConfig
 from .exceptions import OracleFTPConnectionError, OracleFTPError, OracleFTPTransferError
