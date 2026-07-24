@@ -6,11 +6,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from ebuilder_api import EBuilderClient, EBuilderConfig
-from ebuilder_api.exceptions import EBuilderRequestError
-from ebuilder_api.models import DocumentsQueryResponse
+from ebuilder_api.exceptions import EBuilderClientError, EBuilderRequestError
+from ebuilder_api.models import DocumentsQueryFilter, DocumentsQueryRequest, DocumentsQueryResponse
 from oracle_ftp import OracleFTPClient, OracleFTPConfig
 
 
@@ -24,6 +24,13 @@ class EBuilderDocumentsPort(Protocol):
     ) -> DocumentsQueryResponse: ...
 
     def download_file_bytes(self, download_url: str) -> bytes: ...
+
+
+class EBuilderQueryPort(Protocol):
+    def query_documents(
+        self,
+        request: DocumentsQueryRequest | Mapping[str, Any],
+    ) -> DocumentsQueryResponse: ...
 
 
 class OracleFTPUploadPort(Protocol):
@@ -40,6 +47,10 @@ DEFAULT_ORACLE_REMOTE_DIR = "outbound/reqs"
 DEFAULT_SELECTED_FIELDS: tuple[str, ...] = (
     "Document/FileName",
     "Document/DownloadURL",
+    "Document/FileId",
+)
+FALLBACK_SELECTED_FIELDS: tuple[str, ...] = (
+    "Document/FileName",
     "Document/FileId",
 )
 
@@ -102,11 +113,7 @@ class RequisitionsExportJob:
         self._config = config
 
     def run(self) -> RequisitionsExportResult:
-        response = self._ebuilder.find_documents(
-            project_name=self._config.project_name,
-            folder=self._config.ebuilder_folder,
-            selected_fields=list(DEFAULT_SELECTED_FIELDS),
-        )
+        response = self._find_requisition_documents()
 
         today_stamp = datetime.now().strftime("%Y%m%d")
         records = self._select_records(
@@ -118,7 +125,7 @@ class RequisitionsExportJob:
 
         for record in records:
             file_name = _extract_required_document_field(record, "FileName")
-            download_url = _extract_required_document_field(record, "DownloadURL")
+            download_url = self._extract_download_url(record, file_name=file_name)
             safe_name = _safe_file_name(file_name)
 
             payload = self._ebuilder.download_file_bytes(download_url)
@@ -155,6 +162,71 @@ class RequisitionsExportJob:
         if latest_only:
             return [ordered[0]]
         return ordered
+
+    def _find_requisition_documents(self) -> DocumentsQueryResponse:
+        try:
+            return self._ebuilder.find_documents(
+                project_name=self._config.project_name,
+                folder=self._config.ebuilder_folder,
+                selected_fields=list(DEFAULT_SELECTED_FIELDS),
+            )
+        except EBuilderClientError as exc:
+            if not _is_download_url_limit_error(exc):
+                raise
+
+            # e-Builder can reject DownloadURL for large folders. Retry with metadata-only
+            # fields and resolve DownloadURL per selected file.
+            return self._ebuilder.find_documents(
+                project_name=self._config.project_name,
+                folder=self._config.ebuilder_folder,
+                selected_fields=list(FALLBACK_SELECTED_FIELDS),
+            )
+
+    def _extract_download_url(self, record: Mapping[str, Any], *, file_name: str) -> str:
+        download_url = _extract_optional_document_field(record, "DownloadURL")
+        if download_url is not None:
+            return download_url
+        return self._lookup_download_url(file_name)
+
+    def _lookup_download_url(self, file_name: str) -> str:
+        if not hasattr(self._ebuilder, "query_documents"):
+            raise EBuilderRequestError(
+                "Unable to resolve Document/DownloadURL for requisitions export record"
+            )
+
+        request = DocumentsQueryRequest(
+            selected_fields=list(DEFAULT_SELECTED_FIELDS),
+            filters=[
+                DocumentsQueryFilter(
+                    field="Project/ProjectName",
+                    operation="=",
+                    value=self._config.project_name,
+                ),
+                DocumentsQueryFilter(
+                    field="Document/Folder",
+                    operation="=",
+                    value=self._config.ebuilder_folder,
+                ),
+                DocumentsQueryFilter(
+                    field="Document/FileName",
+                    operation="=",
+                    value=file_name,
+                ),
+            ],
+        )
+
+        query_client = cast(EBuilderQueryPort, self._ebuilder)
+        response = query_client.query_documents(request)
+        for item in response.records:
+            if _extract_optional_document_field(item, "FileName") != file_name:
+                continue
+            resolved = _extract_optional_document_field(item, "DownloadURL")
+            if resolved:
+                return resolved
+
+        raise EBuilderRequestError(
+            f"Documents Query did not return Document/DownloadURL for file: {file_name}"
+        )
 
 
 def run_requisitions_export_job() -> RequisitionsExportResult:
@@ -200,3 +272,13 @@ def _safe_file_name(file_name: str) -> str:
     if not candidate or candidate in {".", ".."}:
         raise EBuilderRequestError("Documents Query returned invalid Document/FileName")
     return candidate
+
+
+def _is_download_url_limit_error(exc: EBuilderClientError) -> bool:
+    payload = exc.payload
+    if not isinstance(payload, Mapping):
+        return False
+    description = payload.get("errorDescription")
+    if not isinstance(description, str):
+        return False
+    return "Too many documents found to include the Document/DownloadURL" in description

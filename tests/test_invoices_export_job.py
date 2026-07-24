@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from ebuilder_api.exceptions import EBuilderRequestError
-from ebuilder_api.models import DocumentsQueryResponse
+from ebuilder_api.exceptions import EBuilderClientError, EBuilderRequestError
+from ebuilder_api.models import DocumentsQueryRequest, DocumentsQueryResponse
 from integration_jobs.invoices_export import InvoicesExportJob, InvoicesExportJobConfig
 
 
@@ -55,6 +55,71 @@ class StubOracleFTP:
     ) -> str:
         self.upload_calls.append((file_bytes, remote_path))
         return f"/exports/oracle/{remote_path.strip('/')}"
+
+
+class StubEBuilderDownloadUrlLimit(StubEBuilder):
+    def find_documents(
+        self,
+        *,
+        project_name: str,
+        folder: str,
+        selected_fields: list[str] | None = None,
+    ) -> DocumentsQueryResponse:
+        assert selected_fields is not None
+        if "Document/DownloadURL" in selected_fields:
+            raise EBuilderClientError(
+                status_code=400,
+                payload={
+                    "errorDescription": "Too many documents found to include the Document/DownloadURL"
+                },
+            )
+
+        # Simulate metadata-only folder query response.
+        metadata_records = [
+            {
+                "Document": {
+                    "FileName": record["Document"]["FileName"],
+                    "FileId": record["Document"].get("FileId", "1"),
+                }
+            }
+            for record in self.records
+        ]
+        self.records = metadata_records
+        return super().find_documents(
+            project_name=project_name,
+            folder=folder,
+            selected_fields=selected_fields,
+        )
+
+    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
+        payload = request.to_payload()
+        filters = payload.get("Filters", [])
+        file_name = ""
+        for item in filters:
+            if item.get("Field") == "Document/FileName":
+                file_name = item.get("Value", "")
+                break
+
+        return DocumentsQueryResponse.model_validate(
+            {
+                "meta": {
+                    "pageNumber": 0,
+                    "pageSize": 3000,
+                    "recordCount": 1,
+                },
+                "success": "true",
+                "records": [
+                    {
+                        "Document": {
+                            "FileName": file_name,
+                            "DownloadURL": f"https://download.example/{file_name}",
+                            "FileId": "1",
+                        }
+                    }
+                ],
+                "supportId": "SUPPORT",
+            }
+        )
 
 
 def test_invoices_job_uploads_latest_file_only_by_default() -> None:
@@ -122,6 +187,29 @@ def test_invoices_job_can_upload_all_records() -> None:
     assert result.uploaded_remote_paths == [
         f"/exports/oracle/inbound/APInvoices/eB_Invoices_{today}1745.csv",
         f"/exports/oracle/inbound/APInvoices/eB_Invoices_{today}1700.csv",
+    ]
+
+
+def test_invoices_job_falls_back_when_download_url_is_limited() -> None:
+    today = datetime.now().strftime("%Y%m%d")
+    records = [
+        {
+            "Document": {
+                "FileName": f"eB_Invoices_{today}1745.csv",
+                "DownloadURL": "https://download.example/new",
+                "FileId": "1",
+            }
+        }
+    ]
+
+    ebuilder = StubEBuilderDownloadUrlLimit(records)
+    oracle_ftp = StubOracleFTP()
+
+    result = InvoicesExportJob(ebuilder, oracle_ftp, InvoicesExportJobConfig()).run()
+
+    assert result.uploaded_count == 1
+    assert result.uploaded_remote_paths == [
+        f"/exports/oracle/inbound/APInvoices/eB_Invoices_{today}1745.csv"
     ]
 
 
