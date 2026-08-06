@@ -30,10 +30,11 @@ variable "job_schedules" {
   description = "Cron schedules for each job key."
   type        = map(string)
   default = {
-    requisitions_export = "*/15 * * * *"
-    invoices_export     = "*/15 * * * *"
-    req_import          = "5,20,35,50 * * * *"
-    po_import           = "10,25,40,55 * * * *"
+    requisitions_export = "*/15 * * * 1-5"
+    invoices_export     = "*/15 * * * 1-5"
+    req_import          = "5,20,35,50 * * * 1-5"
+    po_import           = "10,25,40,55 * * * 1-5"
+    ap_invoice_import   = "0,15,30,45 * * * 1-5"
   }
 }
 

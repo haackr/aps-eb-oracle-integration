@@ -6,10 +6,10 @@ container_image = "us-central1-docker.pkg.dev/your-gcp-project-id/integrations/a
 scheduler_time_zone = "America/Chicago"
 
 job_schedules = {
-  requisitions_export = "*/15 * * * *"
-  invoices_export     = "*/15 * * * *"
-  req_import          = "5,20,35,50 * * * *"
-  po_import           = "10,25,40,55 * * * *"
+  requisitions_export = "*/15 * * * 1-5"
+  invoices_export     = "*/15 * * * 1-5"
+  req_import          = "5,20,35,50 * * * 1-5"
+  po_import           = "10,25,40,55 * * * 1-5"
 }
 
 # Non-secret environment variables shared across all jobs.
@@ -60,5 +60,12 @@ per_job_plain_env_vars = {
     INTEGRATION_PO_IMPORT_EBUILDER_FOLDER        = "Documents/01A CA & DPI Imports/CA Import/PO Issued"
     INTEGRATION_PO_IMPORT_LATEST_ONLY            = "false"
     INTEGRATION_PO_IMPORT_CREATE_FOLDER          = "false"
+  }
+  ap_invoice_import = {
+    INTEGRATION_AP_INVOICE_IMPORT_ORACLE_REMOTE_DIR   = "outbound/APInvoices"
+    INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_PROJECT_NAME = "Lawson Integration"
+    INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_FOLDER        = "Documents/02A Purchase Order Invoice Imports"
+    INTEGRATION_AP_INVOICE_IMPORT_LATEST_ONLY            = "false"
+    INTEGRATION_AP_INVOICE_IMPORT_CREATE_FOLDER          = "false"
   }
 }

@@ -77,6 +77,7 @@ Job variables:
 - `INTEGRATION_INVOICES_*`
 - `INTEGRATION_REQ_IMPORT_*`
 - `INTEGRATION_PO_IMPORT_*`
+- `INTEGRATION_AP_INVOICE_IMPORT_*`
 
 See `.env.example` for the current full variable list.
 
@@ -86,15 +87,18 @@ See `.env.example` for the current full variable list.
 from integration_jobs import (
     run_invoices_export_job,
     run_requisitions_export_job,
+    run_ap_invoice_import_job,
     run_req_numbers_import_job,
 )
 
 invoices_result = run_invoices_export_job()
 requisitions_result = run_requisitions_export_job()
+ap_invoice_result = run_ap_invoice_import_job()
 req_result = run_req_numbers_import_job()
 
 print(invoices_result.uploaded_count)
 print(requisitions_result.uploaded_count)
+print(ap_invoice_result.uploaded_count)
 print(req_result.uploaded_count)
 ```
 

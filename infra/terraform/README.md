@@ -6,14 +6,15 @@ This Terraform stack deploys four scheduled integration jobs:
 - `invoices_export`: e-Builder -> Oracle FTP
 - `req_import`: Oracle FTP `/outbound/REQ` -> e-Builder Upload
 - `po_import`: Oracle FTP `/outbound/PO` -> e-Builder Upload
+- `ap_invoice_import`: Oracle FTP `/outbound/APInvoices` -> e-Builder Upload
 
 ## What it creates
 
 - Two service accounts:
   - Runtime service account for Cloud Run Jobs
   - Scheduler service account for Cloud Scheduler HTTP auth
-- Four `google_cloud_run_v2_job` resources
-- Four `google_cloud_scheduler_job` resources
+- Five `google_cloud_run_v2_job` resources
+- Five `google_cloud_scheduler_job` resources
 - IAM bindings:
   - Scheduler SA can run Cloud Run Jobs
   - Runtime SA can access configured Secret Manager secrets

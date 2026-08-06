@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from ebuilder_api import EBuilderClient, EBuilderConfig
 from ebuilder_api.exceptions import EBuilderRequestError
@@ -73,6 +73,8 @@ DEFAULT_REQ_ORACLE_REMOTE_DIR = "outbound/REQ"
 DEFAULT_REQ_EBUILDER_FOLDER = "Documents/01A CA & DPI Imports/CA Import/PREQ Updated"
 DEFAULT_PO_ORACLE_REMOTE_DIR = "outbound/PO"
 DEFAULT_PO_EBUILDER_FOLDER = "Documents/01A CA & DPI Imports/CA Import/PO Issued"
+DEFAULT_AP_INVOICE_ORACLE_REMOTE_DIR = "outbound/APInvoices"
+DEFAULT_AP_INVOICE_EBUILDER_FOLDER = "Documents/02A Purchase Order Invoice Imports"
 
 
 class OracleToEBuilderImportJob:
@@ -175,6 +177,24 @@ def po_numbers_import_config_from_env() -> OracleToEBuilderImportConfig:
     )
 
 
+def ap_invoice_import_config_from_env() -> OracleToEBuilderImportConfig:
+    return OracleToEBuilderImportConfig(
+        oracle_remote_dir=_get_env_non_empty(
+            "INTEGRATION_AP_INVOICE_IMPORT_ORACLE_REMOTE_DIR",
+            DEFAULT_AP_INVOICE_ORACLE_REMOTE_DIR,
+        ),
+        ebuilder_project_name=_get_env_non_empty(
+            "INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_PROJECT_NAME", DEFAULT_PROJECT_NAME
+        ),
+        ebuilder_folder_path=_get_env_non_empty(
+            "INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_FOLDER",
+            DEFAULT_AP_INVOICE_EBUILDER_FOLDER,
+        ),
+        latest_only=_get_env_bool("INTEGRATION_AP_INVOICE_IMPORT_LATEST_ONLY", default=False),
+        create_folder=_get_env_bool("INTEGRATION_AP_INVOICE_IMPORT_CREATE_FOLDER", default=False),
+    )
+
+
 def run_req_numbers_import_with_clients(
     ebuilder_client: EBuilderClient,
     oracle_ftp_client: OracleFTPClient,
@@ -193,6 +213,15 @@ def run_po_numbers_import_with_clients(
     return OracleToEBuilderImportJob(ebuilder_client, oracle_ftp_client, effective_config).run()
 
 
+def run_ap_invoice_import_with_clients(
+    ebuilder_client: EBuilderClient,
+    oracle_ftp_client: OracleFTPClient,
+    config: OracleToEBuilderImportConfig | None = None,
+) -> OracleToEBuilderImportResult:
+    effective_config = config or ap_invoice_import_config_from_env()
+    return OracleToEBuilderImportJob(ebuilder_client, oracle_ftp_client, effective_config).run()
+
+
 def run_req_numbers_import_job() -> OracleToEBuilderImportResult:
     config = req_numbers_import_config_from_env()
     with EBuilderClient(EBuilderConfig.from_env()) as ebuilder_client, OracleFTPClient(
@@ -203,6 +232,14 @@ def run_req_numbers_import_job() -> OracleToEBuilderImportResult:
 
 def run_po_numbers_import_job() -> OracleToEBuilderImportResult:
     config = po_numbers_import_config_from_env()
+    with EBuilderClient(EBuilderConfig.from_env()) as ebuilder_client, OracleFTPClient(
+        OracleFTPConfig.from_env()
+    ) as oracle_ftp_client:
+        return OracleToEBuilderImportJob(ebuilder_client, oracle_ftp_client, config).run()
+
+
+def run_ap_invoice_import_job() -> OracleToEBuilderImportResult:
+    config = ap_invoice_import_config_from_env()
     with EBuilderClient(EBuilderConfig.from_env()) as ebuilder_client, OracleFTPClient(
         OracleFTPConfig.from_env()
     ) as oracle_ftp_client:

@@ -8,12 +8,15 @@ import pytest
 
 from ebuilder_api.exceptions import EBuilderRequestError
 from integration_jobs.oracle_to_ebuilder_imports import (
+    DEFAULT_AP_INVOICE_EBUILDER_FOLDER,
+    DEFAULT_AP_INVOICE_ORACLE_REMOTE_DIR,
     DEFAULT_PO_EBUILDER_FOLDER,
     DEFAULT_PO_ORACLE_REMOTE_DIR,
     DEFAULT_REQ_EBUILDER_FOLDER,
     DEFAULT_REQ_ORACLE_REMOTE_DIR,
     OracleToEBuilderImportConfig,
     OracleToEBuilderImportJob,
+    ap_invoice_import_config_from_env,
     po_numbers_import_config_from_env,
     req_numbers_import_config_from_env,
 )
@@ -35,10 +38,16 @@ class _StubOracleFTP:
         self.list_dir = remote_dir
         return list(self.files)
 
-    def download_file(self, remote_path: str, local_path: str | Path, *, overwrite: bool = False) -> Path:
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(f"xls:{remote_path}".encode("utf-8"))
+        target.write_bytes(f"xls:{remote_path}".encode())
         self.downloads.append((remote_path, target, overwrite))
         return target
 
@@ -166,6 +175,34 @@ def test_po_job_latest_only_uploads_single_file() -> None:
     assert ebuilder.uploads[0]["folder_path"].endswith("PO Issued")
 
 
+def test_ap_invoice_job_uploads_files_to_invoice_import_folder() -> None:
+    oracle_ftp = _StubOracleFTP(
+        [
+            "outbound/APInvoices/Invoice_20260721.xls",
+            "outbound/APInvoices/Invoice_20260722.xls",
+        ]
+    )
+    ebuilder = _StubEBuilder()
+    config = OracleToEBuilderImportConfig(
+        oracle_remote_dir="outbound/APInvoices",
+        ebuilder_project_name="Lawson Integration",
+        ebuilder_folder_path="Documents/02A Purchase Order Invoice Imports",
+        latest_only=True,
+    )
+
+    result = OracleToEBuilderImportJob(
+        ebuilder,
+        oracle_ftp,
+        config,
+        converter=_fake_converter,
+    ).run()
+
+    assert result.uploaded_count == 1
+    assert result.uploaded_file_names == ["Invoice_20260722.xlsx"]
+    assert oracle_ftp.deletes == ["outbound/APInvoices/Invoice_20260722.xls"]
+    assert ebuilder.uploads[0]["folder_path"].endswith("Purchase Order Invoice Imports")
+
+
 def test_import_job_returns_empty_when_no_xls_files() -> None:
     oracle_ftp = _StubOracleFTP(["outbound/PO/readme.md", "outbound/PO/notes.txt"])
     ebuilder = _StubEBuilder()
@@ -175,7 +212,12 @@ def test_import_job_returns_empty_when_no_xls_files() -> None:
         ebuilder_folder_path="Documents/01A CA & DPI Imports/CA Import/PO Issued",
     )
 
-    result = OracleToEBuilderImportJob(ebuilder, oracle_ftp, config, converter=_fake_converter).run()
+    result = OracleToEBuilderImportJob(
+        ebuilder,
+        oracle_ftp,
+        config,
+        converter=_fake_converter,
+    ).run()
 
     assert result.uploaded_count == 0
     assert result.uploaded_file_names == []
@@ -226,5 +268,21 @@ def test_po_config_defaults_from_env(monkeypatch) -> None:
     assert config.oracle_remote_dir == DEFAULT_PO_ORACLE_REMOTE_DIR
     assert config.ebuilder_project_name == "Lawson Integration"
     assert config.ebuilder_folder_path == DEFAULT_PO_EBUILDER_FOLDER
+    assert config.latest_only is False
+    assert config.create_folder is False
+
+
+def test_ap_invoice_config_defaults_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("INTEGRATION_AP_INVOICE_IMPORT_ORACLE_REMOTE_DIR", raising=False)
+    monkeypatch.delenv("INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_PROJECT_NAME", raising=False)
+    monkeypatch.delenv("INTEGRATION_AP_INVOICE_IMPORT_EBUILDER_FOLDER", raising=False)
+    monkeypatch.delenv("INTEGRATION_AP_INVOICE_IMPORT_LATEST_ONLY", raising=False)
+    monkeypatch.delenv("INTEGRATION_AP_INVOICE_IMPORT_CREATE_FOLDER", raising=False)
+
+    config = ap_invoice_import_config_from_env()
+
+    assert config.oracle_remote_dir == DEFAULT_AP_INVOICE_ORACLE_REMOTE_DIR
+    assert config.ebuilder_project_name == "Lawson Integration"
+    assert config.ebuilder_folder_path == DEFAULT_AP_INVOICE_EBUILDER_FOLDER
     assert config.latest_only is False
     assert config.create_folder is False

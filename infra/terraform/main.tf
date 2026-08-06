@@ -32,6 +32,12 @@ locals {
       plain_env   = lookup(var.per_job_plain_env_vars, "po_import", {})
       secret_env  = lookup(var.per_job_secret_env_vars, "po_import", {})
     }
+    ap_invoice_import = {
+      description = "Oracle FTP AP invoice import to e-Builder"
+      entrypoint  = "from integration_jobs import run_ap_invoice_import_job; result = run_ap_invoice_import_job(); print(result)"
+      plain_env   = lookup(var.per_job_plain_env_vars, "ap_invoice_import", {})
+      secret_env  = lookup(var.per_job_secret_env_vars, "ap_invoice_import", {})
+    }
   }
 
   all_secret_names = toset(flatten([
