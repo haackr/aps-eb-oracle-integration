@@ -8,6 +8,7 @@ scheduler_time_zone = "America/Chicago"
 job_schedules = {
   requisitions_export = "*/15 * * * 1-5"
   invoices_export     = "*/15 * * * 1-5"
+  po_changes_export   = "30 16 * * 1-5"
   req_import          = "5,20,35,50 * * * 1-5"
   po_import           = "10,25,40,55 * * * 1-5"
 }
@@ -46,6 +47,10 @@ per_job_plain_env_vars = {
     INTEGRATION_EBUILDER_INVOICES_FOLDER      = "Documents/02 Purchase Order Invoice Exports/"
     INTEGRATION_ORACLE_INVOICES_REMOTE_DIR    = "inbound/APInvoices"
     INTEGRATION_INVOICES_LATEST_ONLY          = "true"
+  }
+  po_changes_export = {
+    INTEGRATION_EBUILDER_PO_CHANGES_FOLDER      = "Documents/03 CO & POC Exports"
+    INTEGRATION_ORACLE_PO_CHANGES_REMOTE_DIR    = "inbound/POChangeOrder"
   }
   req_import = {
     INTEGRATION_REQ_IMPORT_ORACLE_REMOTE_DIR   = "outbound/REQ"

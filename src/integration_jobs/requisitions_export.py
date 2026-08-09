@@ -14,7 +14,7 @@ from ebuilder_api.models import DocumentsQueryFilter, DocumentsQueryRequest, Doc
 from oracle_ftp import OracleFTPClient, OracleFTPConfig
 
 
-class EBuilderDocumentsPort(Protocol):
+class EBuilderDocumentsPort (Protocol):
     def find_documents(
         self,
         *,

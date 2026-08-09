@@ -21,6 +21,13 @@ from .oracle_to_ebuilder_imports import (
     run_req_numbers_import_job,
     run_req_numbers_import_with_clients,
 )
+from .po_changes_export import (
+    POChangesExportJob,
+    POChangesExportJobConfig,
+    POChangesExportResult,
+    run_po_changes_export_job,
+    run_po_changes_export_with_clients,
+)
 from .requisitions_export import (
     RequisitionsExportJob,
     RequisitionsExportJobConfig,
@@ -35,6 +42,11 @@ __all__ = [
     "InvoicesExportResult",
     "run_invoices_export_job",
     "run_invoices_export_with_clients",
+    "POChangesExportJob",
+    "POChangesExportJobConfig",
+    "POChangesExportResult",
+    "run_po_changes_export_job",
+    "run_po_changes_export_with_clients",
     "RequisitionsExportJob",
     "RequisitionsExportJobConfig",
     "RequisitionsExportResult",
