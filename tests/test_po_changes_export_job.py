@@ -16,26 +16,38 @@ class StubEBuilder:
         self.records = records
         self.payloads = payloads
         self.downloaded_urls: list[str] = []
+        self.queries: list[DocumentsQueryRequest] = []
 
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse:
-        assert project_name == "Lawson Integration"
-        assert folder == "Documents/03 CO & POC Exports"
-        assert selected_fields is not None
+    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
+        self.queries.append(request)
+        filters = {item.field: item for item in request.filters}
+        assert filters["Project/ProjectName"].value == "Lawson Integration"
+        assert filters["Document/Folder"].value == "Documents/03 CO & POC Exports"
+        file_name_filter = filters["Document/FileName"]
+        selected_records = self.records
+        if file_name_filter.operation == "LIKE":
+            prefix = file_name_filter.value.rstrip("%")
+            selected_records = [
+                record
+                for record in self.records
+                if record["Document"]["FileName"].startswith(prefix)
+            ]
+        elif file_name_filter.operation == "=":
+            selected_records = [
+                record
+                for record in self.records
+                if record["Document"]["FileName"] == file_name_filter.value
+            ]
+
         return DocumentsQueryResponse.model_validate(
             {
                 "meta": {
                     "pageNumber": 0,
                     "pageSize": 3000,
-                    "recordCount": len(self.records),
+                    "recordCount": len(selected_records),
                 },
                 "success": "true",
-                "records": self.records,
+                "records": selected_records,
                 "supportId": "SUPPORT",
             }
         )
@@ -46,15 +58,14 @@ class StubEBuilder:
 
 
 class StubEBuilderDownloadUrlLimit(StubEBuilder):
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse:
-        assert selected_fields is not None
-        if "Document/DownloadURL" in selected_fields:
+    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
+        file_name_filter = next(
+            item for item in request.filters if item.field == "Document/FileName"
+        )
+        if (
+            file_name_filter.operation == "LIKE"
+            and "Document/DownloadURL" in request.selected_fields
+        ):
             raise EBuilderClientError(
                 status_code=400,
                 payload={
@@ -63,45 +74,18 @@ class StubEBuilderDownloadUrlLimit(StubEBuilder):
                     )
                 },
             )
-        return DocumentsQueryResponse.model_validate(
-            {
-                "meta": {
-                    "pageNumber": 0,
-                    "pageSize": 3000,
-                    "recordCount": len(self.records),
-                },
-                "success": "true",
-                "records": [
-                    {"Document": {"FileName": record["Document"]["FileName"]}}
-                    for record in self.records
-                ],
-                "supportId": "SUPPORT",
-            }
-        )
-
-    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
-        file_name = next(
-            item.value for item in request.filters if item.field == "Document/FileName"
-        )
-        return DocumentsQueryResponse.model_validate(
-            {
-                "meta": {
-                    "pageNumber": 0,
-                    "pageSize": 3000,
-                    "recordCount": 1,
-                },
-                "success": "true",
-                "records": [
-                    {
-                        "Document": {
-                            "FileName": file_name,
-                            "DownloadURL": f"https://download.example/{file_name}",
-                        }
-                    }
-                ],
-                "supportId": "SUPPORT",
-            }
-        )
+        response = super().query_documents(request)
+        if "Document/DownloadURL" not in request.selected_fields:
+            return DocumentsQueryResponse.model_validate(
+                {
+                    **response.model_dump(by_alias=True),
+                    "records": [
+                        {"Document": {"FileName": record["Document"]["FileName"]}}
+                        for record in response.records
+                    ],
+                }
+            )
+        return response
 
 
 class StubOracleFTP:
@@ -149,6 +133,42 @@ def test_po_changes_job_merges_todays_csvs_in_timestamp_order() -> None:
         r"inbound/POChangeOrder/eB_Change_\d{12}\.csv",
         oracle_ftp.upload_calls[0][1],
     )
+    assert [query.filters[-1].value for query in ebuilder.queries[:2]] == [
+        f"POC_{day_stamp}%",
+        f"COP_{day_stamp}%",
+    ]
+
+
+def test_po_changes_job_queries_daily_prefixes_before_large_folder_limit() -> None:
+    day_stamp = datetime.now().strftime("%Y%m%d")
+    records = [
+        _record(f"historical-{index}.csv", f"https://download.example/{index}")
+        for index in range(3000)
+    ]
+    poc_url = "https://download.example/poc"
+    cop_url = "https://download.example/cop"
+    records.extend(
+        [
+            _record(f"POC_{day_stamp}1545.csv", poc_url),
+            _record(f"COP_{day_stamp}1615.csv", cop_url),
+        ]
+    )
+    ebuilder = StubEBuilder(
+        records,
+        {
+            poc_url: b"Change,Value\nPOC,1\n",
+            cop_url: b"Change,Value\nCOP,2\n",
+        },
+    )
+    oracle_ftp = StubOracleFTP()
+
+    result = POChangesExportJob(ebuilder, oracle_ftp, POChangesExportJobConfig()).run()
+
+    assert result.uploaded_count == 1
+    assert [query.filters[-1].value for query in ebuilder.queries] == [
+        f"POC_{day_stamp}%",
+        f"COP_{day_stamp}%",
+    ]
 
 
 def test_po_changes_job_skips_invalid_or_non_current_file_names() -> None:
@@ -169,7 +189,7 @@ def test_po_changes_job_skips_invalid_or_non_current_file_names() -> None:
 
 
 def test_po_changes_job_rejects_mismatched_headers_before_upload() -> None:
-    day_stamp = "20260809"
+    day_stamp = datetime.now().strftime("%Y%m%d")
     ebuilder = StubEBuilder(
         [
             _record(f"POC_{day_stamp}1545.csv", "https://download.example/poc"),

@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from ebuilder_api import EBuilderClient, EBuilderConfig
 from ebuilder_api.exceptions import EBuilderClientError, EBuilderRequestError
@@ -17,22 +17,12 @@ from oracle_ftp import OracleFTPClient, OracleFTPConfig
 
 
 class EBuilderDocumentsPort(Protocol):
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse: ...
-
-    def download_file_bytes(self, download_url: str) -> bytes: ...
-
-
-class EBuilderQueryPort(Protocol):
     def query_documents(
         self,
         request: DocumentsQueryRequest | Mapping[str, Any],
     ) -> DocumentsQueryResponse: ...
+
+    def download_file_bytes(self, download_url: str) -> bytes: ...
 
 
 class OracleFTPUploadPort(Protocol):
@@ -112,9 +102,11 @@ class POChangesExportJob:
         self._config = config
 
     def run(self) -> POChangesExportResult:
-        response = self._find_po_change_documents()
         now = datetime.now()
-        records = self._select_records(response.records, day_stamp=now.strftime("%Y%m%d"))
+        records = self._select_records(
+            self._find_po_change_documents(now.strftime("%Y%m%d")),
+            day_stamp=now.strftime("%Y%m%d"),
+        )
         if not records:
             return POChangesExportResult(uploaded_remote_paths=[], source_file_names=[])
 
@@ -151,22 +143,57 @@ class POChangesExportJob:
 
         return [record for _, record in sorted(selected, key=lambda item: item[0])]
 
-    def _find_po_change_documents(self) -> DocumentsQueryResponse:
-        try:
-            return self._ebuilder.find_documents(
-                project_name=self._config.project_name,
-                folder=self._config.ebuilder_folder,
-                selected_fields=list(DEFAULT_SELECTED_FIELDS),
-            )
-        except EBuilderClientError as exc:
-            if not _is_download_url_limit_error(exc):
-                raise
+    def _find_po_change_documents(self, day_stamp: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for prefix in ("POC", "COP"):
+            try:
+                response = self._query_po_change_documents(
+                    prefix=prefix,
+                    day_stamp=day_stamp,
+                    selected_fields=DEFAULT_SELECTED_FIELDS,
+                )
+            except EBuilderClientError as exc:
+                if not _is_download_url_limit_error(exc):
+                    raise
+                response = self._query_po_change_documents(
+                    prefix=prefix,
+                    day_stamp=day_stamp,
+                    selected_fields=FALLBACK_SELECTED_FIELDS,
+                )
+            records.extend(response.records)
+        return records
 
-            return self._ebuilder.find_documents(
-                project_name=self._config.project_name,
-                folder=self._config.ebuilder_folder,
-                selected_fields=list(FALLBACK_SELECTED_FIELDS),
+    def _query_po_change_documents(
+        self,
+        *,
+        prefix: str,
+        day_stamp: str,
+        selected_fields: tuple[str, ...],
+    ) -> DocumentsQueryResponse:
+        return self._ebuilder.query_documents(
+            DocumentsQueryRequest.model_validate(
+                {
+                    "selectedFields": list(selected_fields),
+                    "Filters": [
+                        {
+                            "Field": "Project/ProjectName",
+                            "Operation": "=",
+                            "Value": self._config.project_name,
+                        },
+                        {
+                            "Field": "Document/Folder",
+                            "Operation": "=",
+                            "Value": self._config.ebuilder_folder,
+                        },
+                        {
+                            "Field": "Document/FileName",
+                            "Operation": "LIKE",
+                            "Value": f"{prefix}_{day_stamp}%",
+                        },
+                    ],
+                }
             )
+        )
 
     def _extract_download_url(self, record: Mapping[str, Any], *, file_name: str) -> str:
         download_url = _extract_optional_document_field(record, "DownloadURL")
@@ -175,11 +202,6 @@ class POChangesExportJob:
         return self._lookup_download_url(file_name)
 
     def _lookup_download_url(self, file_name: str) -> str:
-        if not hasattr(self._ebuilder, "query_documents"):
-            raise EBuilderRequestError(
-                "Unable to resolve Document/DownloadURL for PO-change export record"
-            )
-
         request = DocumentsQueryRequest.model_validate(
             {
                 "selectedFields": list(DEFAULT_SELECTED_FIELDS),
@@ -203,8 +225,7 @@ class POChangesExportJob:
             }
         )
 
-        query_client = cast(EBuilderQueryPort, self._ebuilder)
-        response = query_client.query_documents(request)
+        response = self._ebuilder.query_documents(request)
         for item in response.records:
             if _extract_optional_document_field(item, "FileName") != file_name:
                 continue

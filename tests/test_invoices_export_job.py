@@ -15,33 +15,48 @@ class StubEBuilder:
     def __init__(self, records: list[dict[str, Any]]) -> None:
         self.records = records
         self.downloaded_urls: list[str] = []
+        self.queries: list[DocumentsQueryRequest] = []
 
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse:
-        assert project_name == "Lawson Integration"
-        assert folder == "Documents/02 Purchase Order Invoice Exports/"
-        assert selected_fields is not None
+    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
+        self.queries.append(request)
+        filters = {item.field: item for item in request.filters}
+        assert filters["Project/ProjectName"].value == "Lawson Integration"
+        assert (
+            filters["Document/Folder"].value
+            == "Documents/02 Purchase Order Invoice Exports"
+        )
+        file_name_filter = filters["Document/FileName"]
+        selected_records = self.records
+        if file_name_filter.operation == "LIKE":
+            prefix = file_name_filter.value.rstrip("%")
+            selected_records = [
+                record
+                for record in self.records
+                if record["Document"]["FileName"].startswith(prefix)
+            ]
+        elif file_name_filter.operation == "=":
+            selected_records = [
+                record
+                for record in self.records
+                if record["Document"]["FileName"] == file_name_filter.value
+            ]
+
         return DocumentsQueryResponse.model_validate(
             {
                 "meta": {
                     "pageNumber": 0,
                     "pageSize": 3000,
-                    "recordCount": len(self.records),
+                    "recordCount": len(selected_records),
                 },
                 "success": "true",
-                "records": self.records,
+                "records": selected_records,
                 "supportId": "SUPPORT",
             }
         )
 
     def download_file_bytes(self, download_url: str) -> bytes:
         self.downloaded_urls.append(download_url)
-        return f"payload-for:{download_url}".encode("utf-8")
+        return f"payload-for:{download_url}".encode()
 
 
 class StubOracleFTP:
@@ -58,68 +73,40 @@ class StubOracleFTP:
 
 
 class StubEBuilderDownloadUrlLimit(StubEBuilder):
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse:
-        assert selected_fields is not None
-        if "Document/DownloadURL" in selected_fields:
+    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
+        file_name_filter = next(
+            item for item in request.filters if item.field == "Document/FileName"
+        )
+        if (
+            file_name_filter.operation == "LIKE"
+            and "Document/DownloadURL" in request.selected_fields
+        ):
             raise EBuilderClientError(
                 status_code=400,
                 payload={
-                    "errorDescription": "Too many documents found to include the Document/DownloadURL"
+                    "errorDescription": (
+                        "Too many documents found to include the Document/DownloadURL"
+                    )
                 },
             )
 
-        # Simulate metadata-only folder query response.
-        metadata_records = [
-            {
-                "Document": {
-                    "FileName": record["Document"]["FileName"],
-                    "FileId": record["Document"].get("FileId", "1"),
-                }
-            }
-            for record in self.records
-        ]
-        self.records = metadata_records
-        return super().find_documents(
-            project_name=project_name,
-            folder=folder,
-            selected_fields=selected_fields,
-        )
-
-    def query_documents(self, request: DocumentsQueryRequest) -> DocumentsQueryResponse:
-        payload = request.to_payload()
-        filters = payload.get("Filters", [])
-        file_name = ""
-        for item in filters:
-            if item.get("Field") == "Document/FileName":
-                file_name = item.get("Value", "")
-                break
-
-        return DocumentsQueryResponse.model_validate(
-            {
-                "meta": {
-                    "pageNumber": 0,
-                    "pageSize": 3000,
-                    "recordCount": 1,
-                },
-                "success": "true",
-                "records": [
-                    {
-                        "Document": {
-                            "FileName": file_name,
-                            "DownloadURL": f"https://download.example/{file_name}",
-                            "FileId": "1",
+        response = super().query_documents(request)
+        if "Document/DownloadURL" not in request.selected_fields:
+            return DocumentsQueryResponse.model_validate(
+                {
+                    **response.model_dump(by_alias=True),
+                    "records": [
+                        {
+                            "Document": {
+                                "FileName": record["Document"]["FileName"],
+                                "FileId": record["Document"].get("FileId", "1"),
+                            }
                         }
-                    }
-                ],
-                "supportId": "SUPPORT",
-            }
-        )
+                        for record in response.records
+                    ],
+                }
+            )
+        return response
 
 
 def test_invoices_job_uploads_latest_file_only_by_default() -> None:
@@ -188,6 +175,36 @@ def test_invoices_job_can_upload_all_records() -> None:
         f"/exports/oracle/inbound/APInvoices/eB_Invoices_{today}1745.csv",
         f"/exports/oracle/inbound/APInvoices/eB_Invoices_{today}1700.csv",
     ]
+
+
+def test_invoices_job_queries_daily_prefix_before_large_folder_limit() -> None:
+    today = datetime.now().strftime("%Y%m%d")
+    records = [
+        {
+            "Document": {
+                "FileName": f"historical-{index}.csv",
+                "DownloadURL": f"https://download.example/historical-{index}",
+            }
+        }
+        for index in range(3000)
+    ]
+    records.append(
+        {
+            "Document": {
+                "FileName": f"eB_Invoices_{today}1745.csv",
+                "DownloadURL": "https://download.example/today",
+            }
+        }
+    )
+
+    ebuilder = StubEBuilder(records)
+    oracle_ftp = StubOracleFTP()
+
+    result = InvoicesExportJob(ebuilder, oracle_ftp, InvoicesExportJobConfig()).run()
+
+    assert result.uploaded_count == 1
+    assert ebuilder.queries[0].filters[-1].operation == "LIKE"
+    assert ebuilder.queries[0].filters[-1].value == f"eB_Invoices_{today}%"
 
 
 def test_invoices_job_falls_back_when_download_url_is_limited() -> None:

@@ -32,7 +32,7 @@ variable "job_schedules" {
   default = {
     requisitions_export = "50 15 * * 1-5"
     invoices_export     = "50 16 * * 1-5"
-    po_changes_export   = "20 16 * * 1-5"
+    po_changes_export   = "35 16 * * 1-5"
     req_import          = "20 16 * * 1-5"
     po_import           = "35 16 * * 1-5"
     ap_invoice_import   = "20 17 * * 1-5"

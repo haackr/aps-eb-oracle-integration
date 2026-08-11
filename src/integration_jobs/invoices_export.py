@@ -6,31 +6,24 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from ebuilder_api import EBuilderClient, EBuilderConfig
 from ebuilder_api.exceptions import EBuilderClientError, EBuilderRequestError
-from ebuilder_api.models import DocumentsQueryFilter, DocumentsQueryRequest, DocumentsQueryResponse
+from ebuilder_api.models import (
+    DocumentsQueryRequest,
+    DocumentsQueryResponse,
+)
 from oracle_ftp import OracleFTPClient, OracleFTPConfig
 
 
 class EBuilderDocumentsPort(Protocol):
-    def find_documents(
-        self,
-        *,
-        project_name: str,
-        folder: str,
-        selected_fields: list[str] | None = None,
-    ) -> DocumentsQueryResponse: ...
-
-    def download_file_bytes(self, download_url: str) -> bytes: ...
-
-
-class EBuilderQueryPort(Protocol):
     def query_documents(
         self,
         request: DocumentsQueryRequest | Mapping[str, Any],
     ) -> DocumentsQueryResponse: ...
+
+    def download_file_bytes(self, download_url: str) -> bytes: ...
 
 
 class OracleFTPUploadPort(Protocol):
@@ -42,7 +35,7 @@ class OracleFTPUploadPort(Protocol):
 
 
 DEFAULT_PROJECT_NAME = "Lawson Integration"
-DEFAULT_INVOICES_FOLDER = "Documents/02 Purchase Order Invoice Exports/"
+DEFAULT_INVOICES_FOLDER = "Documents/02 Purchase Order Invoice Exports"
 DEFAULT_ORACLE_REMOTE_DIR = "inbound/APInvoices"
 DEFAULT_SELECTED_FIELDS: tuple[str, ...] = (
     "Document/FileName",
@@ -63,15 +56,20 @@ class InvoicesExportJobConfig:
     latest_only: bool = True
 
     @classmethod
-    def from_env(cls) -> "InvoicesExportJobConfig":
-        project_name = os.getenv("INTEGRATION_EBUILDER_PROJECT_NAME", DEFAULT_PROJECT_NAME).strip()
+    def from_env(cls) -> InvoicesExportJobConfig:
+        project_name = os.getenv(
+            "INTEGRATION_EBUILDER_PROJECT_NAME", DEFAULT_PROJECT_NAME
+        ).strip()
         ebuilder_folder = os.getenv(
             "INTEGRATION_EBUILDER_INVOICES_FOLDER", DEFAULT_INVOICES_FOLDER
         ).strip()
         oracle_remote_dir = os.getenv(
             "INTEGRATION_ORACLE_INVOICES_REMOTE_DIR", DEFAULT_ORACLE_REMOTE_DIR
         ).strip()
-        latest_only = os.getenv("INTEGRATION_INVOICES_LATEST_ONLY", "true").strip().lower() != "false"
+        latest_only = (
+            os.getenv("INTEGRATION_INVOICES_LATEST_ONLY", "true").strip().lower()
+            != "false"
+        )
 
         if not project_name:
             raise ValueError("INTEGRATION_EBUILDER_PROJECT_NAME cannot be empty")
@@ -111,9 +109,8 @@ class InvoicesExportJob:
         self._config = config
 
     def run(self) -> InvoicesExportResult:
-        response = self._find_invoice_documents()
-
         today_stamp = datetime.now().strftime("%Y%m%d")
+        response = self._find_invoice_documents(today_stamp)
         records = self._select_records(
             response.records,
             latest_only=self._config.latest_only,
@@ -127,7 +124,9 @@ class InvoicesExportJob:
             safe_name = _safe_file_name(file_name)
 
             payload = self._ebuilder.download_file_bytes(download_url)
-            remote_target = posixpath.join(self._config.oracle_remote_dir.strip("/"), safe_name)
+            remote_target = posixpath.join(
+                self._config.oracle_remote_dir.strip("/"), safe_name
+            )
             uploaded = self._oracle_ftp.upload_bytes(payload, remote_target)
             uploaded_paths.append(uploaded)
 
@@ -147,26 +146,28 @@ class InvoicesExportJob:
         todays_records = [
             record
             for record in records
-            if (_extract_optional_document_field(record, "FileName") or "").startswith(daily_prefix)
+            if (_extract_optional_document_field(record, "FileName") or "").startswith(
+                daily_prefix
+            )
         ]
         if not todays_records:
             return []
 
         ordered = sorted(
             todays_records,
-            key=lambda record: _extract_optional_document_field(record, "FileName") or "",
+            key=lambda record: _extract_optional_document_field(record, "FileName")
+            or "",
             reverse=True,
         )
         if latest_only:
             return [ordered[0]]
         return ordered
 
-    def _find_invoice_documents(self) -> DocumentsQueryResponse:
+    def _find_invoice_documents(self, day_stamp: str) -> DocumentsQueryResponse:
         try:
-            return self._ebuilder.find_documents(
-                project_name=self._config.project_name,
-                folder=self._config.ebuilder_folder,
-                selected_fields=list(DEFAULT_SELECTED_FIELDS),
+            return self._query_invoice_documents(
+                day_stamp=day_stamp,
+                selected_fields=DEFAULT_SELECTED_FIELDS,
             )
         except EBuilderClientError as exc:
             if not _is_download_url_limit_error(exc):
@@ -174,47 +175,75 @@ class InvoicesExportJob:
 
             # e-Builder can reject DownloadURL for large folders. Retry with metadata-only
             # fields and resolve DownloadURL per selected file.
-            return self._ebuilder.find_documents(
-                project_name=self._config.project_name,
-                folder=self._config.ebuilder_folder,
-                selected_fields=list(FALLBACK_SELECTED_FIELDS),
+            return self._query_invoice_documents(
+                day_stamp=day_stamp,
+                selected_fields=FALLBACK_SELECTED_FIELDS,
             )
 
-    def _extract_download_url(self, record: Mapping[str, Any], *, file_name: str) -> str:
+    def _query_invoice_documents(
+        self,
+        *,
+        day_stamp: str,
+        selected_fields: tuple[str, ...],
+    ) -> DocumentsQueryResponse:
+        return self._ebuilder.query_documents(
+            DocumentsQueryRequest.model_validate(
+                {
+                    "selectedFields": list(selected_fields),
+                    "Filters": [
+                        {
+                            "Field": "Project/ProjectName",
+                            "Operation": "=",
+                            "Value": self._config.project_name,
+                        },
+                        {
+                            "Field": "Document/Folder",
+                            "Operation": "=",
+                            "Value": self._config.ebuilder_folder,
+                        },
+                        {
+                            "Field": "Document/FileName",
+                            "Operation": "LIKE",
+                            "Value": f"eB_Invoices_{day_stamp}%",
+                        },
+                    ],
+                }
+            )
+        )
+
+    def _extract_download_url(
+        self, record: Mapping[str, Any], *, file_name: str
+    ) -> str:
         download_url = _extract_optional_document_field(record, "DownloadURL")
         if download_url is not None:
             return download_url
         return self._lookup_download_url(file_name)
 
     def _lookup_download_url(self, file_name: str) -> str:
-        if not hasattr(self._ebuilder, "query_documents"):
-            raise EBuilderRequestError(
-                "Unable to resolve Document/DownloadURL for invoice export record"
-            )
-
-        request = DocumentsQueryRequest(
-            selected_fields=list(DEFAULT_SELECTED_FIELDS),
-            filters=[
-                DocumentsQueryFilter(
-                    field="Project/ProjectName",
-                    operation="=",
-                    value=self._config.project_name,
-                ),
-                DocumentsQueryFilter(
-                    field="Document/Folder",
-                    operation="=",
-                    value=self._config.ebuilder_folder,
-                ),
-                DocumentsQueryFilter(
-                    field="Document/FileName",
-                    operation="=",
-                    value=file_name,
-                ),
-            ],
+        request = DocumentsQueryRequest.model_validate(
+            {
+                "selectedFields": list(DEFAULT_SELECTED_FIELDS),
+                "Filters": [
+                    {
+                        "Field": "Project/ProjectName",
+                        "Operation": "=",
+                        "Value": self._config.project_name,
+                    },
+                    {
+                        "Field": "Document/Folder",
+                        "Operation": "=",
+                        "Value": self._config.ebuilder_folder,
+                    },
+                    {
+                        "Field": "Document/FileName",
+                        "Operation": "=",
+                        "Value": file_name,
+                    },
+                ],
+            }
         )
 
-        query_client = cast(EBuilderQueryPort, self._ebuilder)
-        response = query_client.query_documents(request)
+        response = self._ebuilder.query_documents(request)
         for item in response.records:
             if _extract_optional_document_field(item, "FileName") != file_name:
                 continue
@@ -233,9 +262,10 @@ def run_invoices_export_job() -> InvoicesExportResult:
     ebuilder_config = EBuilderConfig.from_env()
     oracle_config = OracleFTPConfig.from_env()
 
-    with EBuilderClient(ebuilder_config) as ebuilder_client, OracleFTPClient(
-        oracle_config
-    ) as oracle_ftp_client:
+    with (
+        EBuilderClient(ebuilder_config) as ebuilder_client,
+        OracleFTPClient(oracle_config) as oracle_ftp_client,
+    ):
         return InvoicesExportJob(ebuilder_client, oracle_ftp_client, config).run()
 
 
@@ -248,7 +278,9 @@ def run_invoices_export_with_clients(
     return InvoicesExportJob(ebuilder_client, oracle_ftp_client, effective_config).run()
 
 
-def _extract_optional_document_field(record: Mapping[str, Any], field_name: str) -> str | None:
+def _extract_optional_document_field(
+    record: Mapping[str, Any], field_name: str
+) -> str | None:
     document_section = record.get("Document")
     if not isinstance(document_section, Mapping):
         return None
@@ -261,7 +293,9 @@ def _extract_optional_document_field(record: Mapping[str, Any], field_name: str)
 def _extract_required_document_field(record: Mapping[str, Any], field_name: str) -> str:
     value = _extract_optional_document_field(record, field_name)
     if value is None:
-        raise EBuilderRequestError(f"Documents Query record is missing Document/{field_name}")
+        raise EBuilderRequestError(
+            f"Documents Query record is missing Document/{field_name}"
+        )
     return value
 
 
