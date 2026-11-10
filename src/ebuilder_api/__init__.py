@@ -1,6 +1,10 @@
 """e-Builder REST API wrapper."""
 
-from .client import EBuilderClient
+from .client import (
+    PROCESS_IMPORT_ENDPOINTS,
+    PROCESS_QUERY_ENDPOINTS,
+    EBuilderClient,
+)
 from .config import EBuilderConfig
 from .exceptions import (
     EBuilderAPIError,
@@ -18,6 +22,13 @@ from .models import (
     DocumentsUploadOptions,
     DocumentsUploadRequest,
     DocumentsUploadResponse,
+    ProcessImportOptions,
+    ProcessImportRequest,
+    ProcessImportResponse,
+    ProcessQueryFilter,
+    ProcessQueryMeta,
+    ProcessQueryRequest,
+    ProcessQueryResponse,
 )
 
 __all__ = [
@@ -36,4 +47,13 @@ __all__ = [
     "DocumentsUploadOptions",
     "DocumentsUploadRequest",
     "DocumentsUploadResponse",
+    "ProcessImportOptions",
+    "ProcessImportRequest",
+    "ProcessImportResponse",
+    "ProcessQueryFilter",
+    "ProcessQueryMeta",
+    "ProcessQueryRequest",
+    "ProcessQueryResponse",
+    "PROCESS_QUERY_ENDPOINTS",
+    "PROCESS_IMPORT_ENDPOINTS",
 ]

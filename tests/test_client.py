@@ -515,3 +515,156 @@ def test_upload_document_file_requires_existing_file(tmp_path: Path) -> None:
                 folder_path="Documents/01A CA & DPI Imports/CA Import/PREQ Updated",
                 project_name="Lawson Integration",
             )
+
+
+def test_query_process_posts_to_correct_endpoint_and_params() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"pageNumber": 1, "pageSize": 10, "recordCount": 1},
+                "records": [{"ProcessInstance": {"InstanceCounter": "100"}}],
+                "supportId": "SUP-1",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    with EBuilderClient(_v2_token_config(), transport=transport) as client:
+        # 1. Test PINV
+        res_pinv = client.query_process(
+            "PINV",
+            {
+                "selectedFields": ["ProcessInstance/InstanceCounter"],
+                "filters": [{"Field": "ProcessInstance/InstanceCounter", "Operation": "=", "Value": "100"}],
+            },
+            page_number=1,
+            page_size=10,
+        )
+        assert res_pinv.meta.record_count == 1
+        assert res_pinv.records[0]["ProcessInstance"]["InstanceCounter"] == "100"
+        assert res_pinv.support_id == "SUP-1"
+
+        # 2. Test COP
+        client.query_process("COP", {"selectedFields": ["Commitment/CommitmentNumber"]})
+
+        # 3. Test POC
+        client.query_process("POC", {"selectedFields": ["CommitmentChange/ChangeNumber"]})
+
+    assert len(calls) == 3
+    # Check PINV request
+    assert calls[0].url.path == "/api/v2/CommitmentInvoiceProcesses/Query"
+    assert calls[0].url.params["processPrefix"] == "PINV"
+    assert calls[0].url.params["pageNumber"] == "1"
+    assert calls[0].url.params["pageSize"] == "10"
+    payload = json.loads(calls[0].content.decode("utf-8"))
+    assert payload["selectedFields"] == ["ProcessInstance/InstanceCounter"]
+
+    # Check COP request
+    assert calls[1].url.path == "/api/v2/CommitmentProcesses/Query"
+    assert calls[1].url.params["processPrefix"] == "COP"
+
+    # Check POC request
+    assert calls[2].url.path == "/api/v2/CommitmentChangeProcesses/Query"
+    assert calls[2].url.params["processPrefix"] == "POC"
+
+
+def test_query_all_process_records_paginates_until_exhausted() -> None:
+    page_calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("pageNumber", "0"))
+        page_calls.append(page)
+        if page == 0:
+            records = [{"id": 1}, {"id": 2}]
+            count = 2
+        elif page == 1:
+            records = [{"id": 3}]
+            count = 1
+        else:
+            records = []
+            count = 0
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"pageNumber": page, "pageSize": 2, "recordCount": count},
+                "records": records,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    with EBuilderClient(_v2_token_config(), transport=transport) as client:
+        records = client.query_all_process_records(
+            "PINV",
+            {"selectedFields": ["ProcessInstance/InstanceCounter"]},
+            page_size=2,
+        )
+
+    assert len(records) == 3
+    assert [r["id"] for r in records] == [1, 2, 3]
+    assert page_calls == [0, 1]
+
+
+def test_import_process_records_posts_correct_payload() -> None:
+    seen_request: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_request
+        seen_request = request
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "supportId": "IMP-99",
+                "message": "Processed 1 records",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    with EBuilderClient(_v2_token_config(), transport=transport) as client:
+        resp = client.import_process_records(
+            process_prefix="PINV",
+            project_identifier="ProjectName",
+            import_mode="Update",
+            data=[
+                {
+                    "header": {
+                        "step": "ERP Integration Hold",
+                        "action": "Processed",
+                        "processDataFields": {"Integration Status": "Complete"},
+                    }
+                }
+            ],
+        )
+
+    assert resp.success is True
+    assert resp.support_id == "IMP-99"
+    assert resp.message == "Processed 1 records"
+
+    assert seen_request is not None
+    assert seen_request.url.path == "/api/v2/InvoiceProcesses/Import"
+    assert seen_request.url.params["processPrefix"] == "PINV"
+    payload = json.loads(seen_request.content.decode("utf-8"))
+    assert payload["options"]["importMode"] == "Update"
+    assert payload["options"]["processPrefix"] == "PINV"
+    assert payload["data"][0]["header"]["action"] == "Processed"
+    assert payload["data"][0]["header"]["processDataFields"]["Integration Status"] == "Complete"
+
+
+def test_unknown_process_prefix_raises_request_error() -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+
+    with EBuilderClient(_v2_token_config(), transport=transport) as client:
+        with pytest.raises(EBuilderRequestError, match="No default query endpoint configured"):
+            client.query_process("UNKNOWN_PREFIX", {"selectedFields": ["Field1"]})
+
+        with pytest.raises(EBuilderRequestError, match="No default import endpoint configured"):
+            client.import_process_records(
+                process_prefix="UNKNOWN_PREFIX",
+                data=[{"header": {}}],
+            )

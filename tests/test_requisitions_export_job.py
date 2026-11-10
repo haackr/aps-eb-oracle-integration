@@ -135,7 +135,7 @@ def test_requisitions_job_uploads_latest_file_only_by_default() -> None:
 
     assert result.uploaded_count == 1
     assert result.uploaded_remote_paths == [
-        f"/exports/oracle/outbound/reqs/eB_Reqs_{today}1745.csv"
+        f"/exports/oracle/inbound/Requisitions/eB_Reqs_{today}1745.csv"
     ]
     assert ebuilder.downloaded_urls == ["https://download.example/new"]
 
@@ -172,8 +172,8 @@ def test_requisitions_job_can_upload_all_records() -> None:
 
     assert result.uploaded_count == 2
     assert result.uploaded_remote_paths == [
-        f"/exports/oracle/outbound/reqs/eB_Reqs_{today}1745.csv",
-        f"/exports/oracle/outbound/reqs/eB_Reqs_{today}1700.csv",
+        f"/exports/oracle/inbound/Requisitions/eB_Reqs_{today}1745.csv",
+        f"/exports/oracle/inbound/Requisitions/eB_Reqs_{today}1700.csv",
     ]
 
 
@@ -228,7 +228,7 @@ def test_requisitions_job_falls_back_when_download_url_is_limited() -> None:
 
     assert result.uploaded_count == 1
     assert result.uploaded_remote_paths == [
-        f"/exports/oracle/outbound/reqs/eB_Reqs_{today}1745.csv"
+        f"/exports/oracle/inbound/Requisitions/eB_Reqs_{today}1745.csv"
     ]
 
 

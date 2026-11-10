@@ -50,7 +50,7 @@ class DocumentsQueryRequest(BaseModel):
         return self.model_dump(by_alias=True, exclude_none=True)
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> "DocumentsQueryRequest":
+    def from_payload(cls, payload: Mapping[str, Any]) -> DocumentsQueryRequest:
         return cls.model_validate(payload)
 
 
@@ -102,7 +102,7 @@ class DocumentsUploadRequest(BaseModel):
         return self.model_dump(by_alias=True, exclude_none=True)
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> "DocumentsUploadRequest":
+    def from_payload(cls, payload: Mapping[str, Any]) -> DocumentsUploadRequest:
         return cls.model_validate(payload)
 
 
@@ -111,6 +111,92 @@ class DocumentsUploadResponse(BaseModel):
 
     success: bool
     support_id: str | None = Field(default=None, alias="supportId")
+
+
+class ProcessQueryFilter(BaseModel):
+    """Filter for Process Query endpoints."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    field: str = Field(alias="Field")
+    operation: str = Field(alias="Operation")
+    value: str = Field(alias="Value")
+
+
+class ProcessQueryRequest(BaseModel):
+    """Request payload for POST /*Processes/Query."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    selected_fields: list[str] = Field(alias="selectedFields")
+    filters: list[ProcessQueryFilter] = Field(default_factory=list, alias="filters")
+
+    def to_payload(self) -> dict[str, Any]:
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> ProcessQueryRequest:
+        return cls.model_validate(payload)
+
+
+class ProcessQueryMeta(BaseModel):
+    """Metadata returned from Process Query endpoints."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    page_number: int = Field(alias="pageNumber")
+    page_size: int = Field(alias="pageSize")
+    record_count: int = Field(alias="recordCount")
+
+
+class ProcessQueryResponse(BaseModel):
+    """Response payload from POST /*Processes/Query."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    meta: ProcessQueryMeta
+    records: list[dict[str, Any]]
+    support_id: str | None = Field(default=None, alias="supportId")
+    success: bool | str | None = None
+
+
+class ProcessImportOptions(BaseModel):
+    """Options for Process Import endpoints."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    project_identifier: str = Field(default="ProjectName", alias="projectIdentifier")
+    process_prefix: str = Field(alias="processPrefix")
+    import_mode: str = Field(default="Entity", alias="importMode")
+    create_as_draft: bool = Field(default=False, alias="createAsDraft")
+    abort_on_exception: bool = Field(default=False, alias="abortOnException")
+
+
+class ProcessImportRequest(BaseModel):
+    """Request payload for POST /*Processes/Import."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    options: ProcessImportOptions = Field(alias="options")
+    data: list[dict[str, Any]] = Field(alias="data")
+
+    def to_payload(self) -> dict[str, Any]:
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> ProcessImportRequest:
+        return cls.model_validate(payload)
+
+
+class ProcessImportResponse(BaseModel):
+    """Response payload from POST /*Processes/Import."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    success: bool | str | None = None
+    support_id: str | None = Field(default=None, alias="supportId")
+    message: str | None = None
+    data: Any | None = None
 
 
 class PaginationParams(BaseModel):

@@ -25,6 +25,11 @@ from .models import (
     DocumentsUploadOptions,
     DocumentsUploadRequest,
     DocumentsUploadResponse,
+    ProcessImportOptions,
+    ProcessImportRequest,
+    ProcessImportResponse,
+    ProcessQueryRequest,
+    ProcessQueryResponse,
 )
 
 DEFAULT_DOCUMENT_QUERY_FIELDS: tuple[str, ...] = (
@@ -35,6 +40,20 @@ DEFAULT_DOCUMENT_QUERY_FIELDS: tuple[str, ...] = (
     "Document/DownloadURL",
     "Document/Folder",
 )
+
+PROCESS_QUERY_ENDPOINTS: dict[str, str] = {
+    "PINV": "/CommitmentInvoiceProcesses/Query",
+    "COP": "/CommitmentProcesses/Query",
+    "CA": "/CommitmentProcesses/Query",
+    "POC": "/CommitmentChangeProcesses/Query",
+}
+
+PROCESS_IMPORT_ENDPOINTS: dict[str, str] = {
+    "PINV": "/InvoiceProcesses/Import",
+    "COP": "/CommitmentProcesses/Import",
+    "CA": "/CommitmentProcesses/Import",
+    "POC": "/CommitmentChangeProcesses/Import",
+}
 
 
 class EBuilderClient:
@@ -268,6 +287,132 @@ class EBuilderClient:
             ],
         )
         return self.query_documents(request)
+
+    def resolve_process_query_endpoint(self, process_prefix: str) -> str:
+        prefix = process_prefix.strip().upper()
+        if prefix in PROCESS_QUERY_ENDPOINTS:
+            return PROCESS_QUERY_ENDPOINTS[prefix]
+        raise EBuilderRequestError(
+            f"No default query endpoint configured for process prefix '{process_prefix}'. "
+            f"Specify endpoint explicitly."
+        )
+
+    def resolve_process_import_endpoint(self, process_prefix: str) -> str:
+        prefix = process_prefix.strip().upper()
+        if prefix in PROCESS_IMPORT_ENDPOINTS:
+            return PROCESS_IMPORT_ENDPOINTS[prefix]
+        raise EBuilderRequestError(
+            f"No default import endpoint configured for process prefix '{process_prefix}'. "
+            f"Specify endpoint explicitly."
+        )
+
+    def query_process(
+        self,
+        process_prefix: str,
+        request: ProcessQueryRequest | Mapping[str, Any],
+        *,
+        page_number: int | None = None,
+        page_size: int | None = None,
+        endpoint: str | None = None,
+    ) -> ProcessQueryResponse:
+        """Run a Process Query request via POST /*Processes/Query."""
+        if isinstance(request, ProcessQueryRequest):
+            payload = request.to_payload()
+        else:
+            payload = ProcessQueryRequest.from_payload(request).to_payload()
+
+        target_endpoint = endpoint or self.resolve_process_query_endpoint(process_prefix)
+        params: dict[str, str | int] = {"processPrefix": process_prefix.strip().upper()}
+        if page_number is not None:
+            params["pageNumber"] = page_number
+        if page_size is not None:
+            params["pageSize"] = page_size
+
+        response_payload = self.post(target_endpoint, json=payload, params=params)
+        try:
+            return ProcessQueryResponse.model_validate(response_payload)
+        except ValidationError as exc:
+            raise EBuilderRequestError(
+                f"Process Query response was not in the expected format: {exc}"
+            ) from exc
+
+    def query_all_process_records(
+        self,
+        process_prefix: str,
+        request: ProcessQueryRequest | Mapping[str, Any],
+        *,
+        page_size: int = 1000,
+        endpoint: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query all matching process records across pages."""
+        all_records: list[dict[str, Any]] = []
+        page_number = 0
+
+        while True:
+            response = self.query_process(
+                process_prefix,
+                request,
+                page_number=page_number,
+                page_size=page_size,
+                endpoint=endpoint,
+            )
+            records = response.records
+            all_records.extend(records)
+
+            if len(records) < page_size or response.meta.record_count < page_size:
+                break
+            page_number += 1
+
+        return all_records
+
+    def import_process(
+        self,
+        process_prefix: str,
+        request: ProcessImportRequest | Mapping[str, Any],
+        *,
+        endpoint: str | None = None,
+    ) -> ProcessImportResponse:
+        """Import or update process instances via POST /*Processes/Import."""
+        if isinstance(request, ProcessImportRequest):
+            payload = request.to_payload()
+        else:
+            payload = ProcessImportRequest.from_payload(request).to_payload()
+
+        target_endpoint = endpoint or self.resolve_process_import_endpoint(process_prefix)
+        params = {"processPrefix": process_prefix.strip().upper()}
+
+        response_payload = self.post(target_endpoint, json=payload, params=params)
+        try:
+            return ProcessImportResponse.model_validate(response_payload)
+        except ValidationError as exc:
+            raise EBuilderRequestError(
+                f"Process Import response was not in the expected format: {exc}"
+            ) from exc
+
+    def import_process_records(
+        self,
+        *,
+        process_prefix: str,
+        data: list[dict[str, Any]],
+        project_identifier: str = "ProjectName",
+        import_mode: str = "Entity",
+        create_as_draft: bool = False,
+        abort_on_exception: bool = False,
+        endpoint: str | None = None,
+    ) -> ProcessImportResponse:
+        """Convenience method to import/update a list of process records."""
+        prefix = process_prefix.strip().upper()
+        request = ProcessImportRequest(
+            options=ProcessImportOptions(
+                project_identifier=project_identifier,
+                process_prefix=prefix,
+                import_mode=import_mode,
+                create_as_draft=create_as_draft,
+                abort_on_exception=abort_on_exception,
+            ),
+            data=data,
+        )
+        return self.import_process(prefix, request, endpoint=endpoint)
 
     def download_file_bytes(self, download_url: str) -> bytes:
         """Download file bytes from a document DownloadURL.

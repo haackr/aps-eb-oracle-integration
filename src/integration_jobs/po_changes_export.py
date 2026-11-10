@@ -8,43 +8,23 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
-from typing import Any, Protocol
+from typing import Any
 
 from ebuilder_api import EBuilderClient, EBuilderConfig
-from ebuilder_api.exceptions import EBuilderClientError, EBuilderRequestError
-from ebuilder_api.models import DocumentsQueryRequest, DocumentsQueryResponse
+from ebuilder_api.exceptions import EBuilderRequestError
 from oracle_ftp import OracleFTPClient, OracleFTPConfig
 
-
-class EBuilderDocumentsPort(Protocol):
-    def query_documents(
-        self,
-        request: DocumentsQueryRequest | Mapping[str, Any],
-    ) -> DocumentsQueryResponse: ...
-
-    def download_file_bytes(self, download_url: str) -> bytes: ...
-
-
-class OracleFTPUploadPort(Protocol):
-    def upload_bytes(
-        self,
-        file_bytes: bytes,
-        remote_path: str,
-    ) -> str: ...
-
+from ._export_common import (
+    DocumentQueryService,
+    EBuilderDocumentsPort,
+    OracleFTPUploadPort,
+    extract_optional_document_field,
+    extract_required_document_field,
+)
 
 DEFAULT_PROJECT_NAME = "Lawson Integration"
 DEFAULT_PO_CHANGES_FOLDER = "Documents/03 CO & POC Exports"
 DEFAULT_ORACLE_REMOTE_DIR = "inbound/POChangeOrder"
-DEFAULT_SELECTED_FIELDS: tuple[str, ...] = (
-    "Document/FileName",
-    "Document/DownloadURL",
-    "Document/FileId",
-)
-FALLBACK_SELECTED_FIELDS: tuple[str, ...] = (
-    "Document/FileName",
-    "Document/FileId",
-)
 PO_CHANGE_FILE_NAME_PATTERN = re.compile(r"^(?:POC|COP)_(?P<timestamp>\d{12})\.csv$", re.IGNORECASE)
 
 
@@ -103,8 +83,13 @@ class POChangesExportJob:
 
     def run(self) -> POChangesExportResult:
         now = datetime.now()
+        documents = DocumentQueryService(
+            self._ebuilder,
+            project_name=self._config.project_name,
+            folder=self._config.ebuilder_folder,
+        )
         records = self._select_records(
-            self._find_po_change_documents(now.strftime("%Y%m%d")),
+            self._find_po_change_documents(documents, now.strftime("%Y%m%d")),
             day_stamp=now.strftime("%Y%m%d"),
         )
         if not records:
@@ -112,8 +97,8 @@ class POChangesExportJob:
 
         payloads: list[tuple[str, bytes]] = []
         for record in records:
-            file_name = _extract_required_document_field(record, "FileName")
-            download_url = self._extract_download_url(record, file_name=file_name)
+            file_name = extract_required_document_field(record, "FileName")
+            download_url = documents.download_url(record, file_name=file_name)
             payloads.append((file_name, self._ebuilder.download_file_bytes(download_url)))
 
         merged_payload = _merge_csv_payloads(payloads)
@@ -134,7 +119,7 @@ class POChangesExportJob:
     ) -> list[Mapping[str, Any]]:
         selected: list[tuple[str, Mapping[str, Any]]] = []
         for record in records:
-            file_name = _extract_optional_document_field(record, "FileName")
+            file_name = extract_optional_document_field(record, "FileName")
             if file_name is None:
                 continue
             timestamp = _po_change_timestamp(file_name)
@@ -143,99 +128,14 @@ class POChangesExportJob:
 
         return [record for _, record in sorted(selected, key=lambda item: item[0])]
 
-    def _find_po_change_documents(self, day_stamp: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _find_po_change_documents(
+        documents: DocumentQueryService, day_stamp: str
+    ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for prefix in ("POC", "COP"):
-            try:
-                response = self._query_po_change_documents(
-                    prefix=prefix,
-                    day_stamp=day_stamp,
-                    selected_fields=DEFAULT_SELECTED_FIELDS,
-                )
-            except EBuilderClientError as exc:
-                if not _is_download_url_limit_error(exc):
-                    raise
-                response = self._query_po_change_documents(
-                    prefix=prefix,
-                    day_stamp=day_stamp,
-                    selected_fields=FALLBACK_SELECTED_FIELDS,
-                )
-            records.extend(response.records)
+            records.extend(documents.find_documents(f"{prefix}_{day_stamp}%"))
         return records
-
-    def _query_po_change_documents(
-        self,
-        *,
-        prefix: str,
-        day_stamp: str,
-        selected_fields: tuple[str, ...],
-    ) -> DocumentsQueryResponse:
-        return self._ebuilder.query_documents(
-            DocumentsQueryRequest.model_validate(
-                {
-                    "selectedFields": list(selected_fields),
-                    "Filters": [
-                        {
-                            "Field": "Project/ProjectName",
-                            "Operation": "=",
-                            "Value": self._config.project_name,
-                        },
-                        {
-                            "Field": "Document/Folder",
-                            "Operation": "=",
-                            "Value": self._config.ebuilder_folder,
-                        },
-                        {
-                            "Field": "Document/FileName",
-                            "Operation": "LIKE",
-                            "Value": f"{prefix}_{day_stamp}%",
-                        },
-                    ],
-                }
-            )
-        )
-
-    def _extract_download_url(self, record: Mapping[str, Any], *, file_name: str) -> str:
-        download_url = _extract_optional_document_field(record, "DownloadURL")
-        if download_url is not None:
-            return download_url
-        return self._lookup_download_url(file_name)
-
-    def _lookup_download_url(self, file_name: str) -> str:
-        request = DocumentsQueryRequest.model_validate(
-            {
-                "selectedFields": list(DEFAULT_SELECTED_FIELDS),
-                "Filters": [
-                    {
-                        "Field": "Project/ProjectName",
-                        "Operation": "=",
-                        "Value": self._config.project_name,
-                    },
-                    {
-                        "Field": "Document/Folder",
-                        "Operation": "=",
-                        "Value": self._config.ebuilder_folder,
-                    },
-                    {
-                        "Field": "Document/FileName",
-                        "Operation": "=",
-                        "Value": file_name,
-                    },
-                ],
-            }
-        )
-
-        response = self._ebuilder.query_documents(request)
-        for item in response.records:
-            if _extract_optional_document_field(item, "FileName") != file_name:
-                continue
-            resolved = _extract_optional_document_field(item, "DownloadURL")
-            if resolved:
-                return resolved
-
-        raise EBuilderRequestError(
-            f"Documents Query did not return Document/DownloadURL for file: {file_name}"
-        )
 
 
 def run_po_changes_export_job() -> POChangesExportResult:
@@ -254,23 +154,6 @@ def run_po_changes_export_with_clients(
 ) -> POChangesExportResult:
     effective_config = config or POChangesExportJobConfig.from_env()
     return POChangesExportJob(ebuilder_client, oracle_ftp_client, effective_config).run()
-
-
-def _extract_optional_document_field(record: Mapping[str, Any], field_name: str) -> str | None:
-    document_section = record.get("Document")
-    if not isinstance(document_section, Mapping):
-        return None
-    value = document_section.get(field_name)
-    if isinstance(value, str) and value.strip():
-        return value
-    return None
-
-
-def _extract_required_document_field(record: Mapping[str, Any], field_name: str) -> str:
-    value = _extract_optional_document_field(record, field_name)
-    if value is None:
-        raise EBuilderRequestError(f"Documents Query record is missing Document/{field_name}")
-    return value
 
 
 def _po_change_timestamp(file_name: str) -> str | None:
@@ -307,15 +190,5 @@ def _merge_csv_payloads(payloads: Sequence[tuple[str, bytes]]) -> bytes:
             raise EBuilderRequestError(f"PO-change CSV has different headers: {file_name}")
 
         csv_writer.writerows(rows)
-
     return output.getvalue().encode("utf-8")
-
-
-def _is_download_url_limit_error(exc: EBuilderClientError) -> bool:
-    payload = exc.payload
-    if not isinstance(payload, Mapping):
-        return False
-    description = payload.get("errorDescription")
-    if not isinstance(description, str):
-        return False
-    return "Too many documents found to include the Document/DownloadURL" in description
+    return output.getvalue().encode("utf-8")
