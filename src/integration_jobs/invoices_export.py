@@ -173,6 +173,7 @@ def generate_oracle_invoice_rows(records: list[dict[str, Any]]) -> list[dict[str
         for idx, line in enumerate(sorted_lines, start=1):
             commitment_item = line.get("CommitmentItem") or {}
             invoice_item = line.get("CommitmentInvoiceItem") or {}
+            po_line = extract_po_line_number(commitment_item.get("ItemNumber"), idx)
 
             row = {
                 "Invoice Number": str(invoice.get("InvoiceNumber") or ""),
@@ -181,13 +182,13 @@ def generate_oracle_invoice_rows(records: list[dict[str, Any]]) -> list[dict[str
                 "Vendor Number": str(company.get("CompanyNumber") or ""),
                 "Supplier Site": str(supplier_site),
                 "Invoice Type": invoice_type,
-                "Line Number": str(idx),
+                "Line Number": po_line,
                 "Line Type": "ITEM",
                 "Line Description": str(commitment_item.get("Description") or ""),
                 "Quantity": "",
                 "Line Amount": format_oracle_amount(invoice_item.get("Amount")),
                 "PO Number": str(commitment.get("CommitmentNumber") or ""),
-                "PO Line": extract_po_line_number(commitment_item.get("ItemNumber"), idx),
+                "PO Line": po_line,
                 "FlexField1": str(project_custom_fields.get("Project ID") or ""),
                 "FlexField2": str(instance.get("InstanceCounter") or ""),
                 "Attachment File": str(data_fields.get("Oracle Attachment") or ""),
