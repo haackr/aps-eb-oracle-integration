@@ -11,6 +11,7 @@ from ebuilder_api.models import DocumentsQueryRequest, DocumentsQueryResponse
 from integration_jobs.requisitions_export import (
     RequisitionsExportJob,
     RequisitionsExportJobConfig,
+    pad_requisition_line_numbers,
 )
 
 
@@ -288,3 +289,84 @@ def test_requisitions_job_validates_required_document_fields(
 
     with pytest.raises(EBuilderRequestError):
         RequisitionsExportJob(ebuilder, oracle_ftp, RequisitionsExportJobConfig()).run()
+
+
+def test_pad_requisition_line_numbers_pads_integer_lines() -> None:
+    csv_input = (
+        b'"Entered By","Requisition Number","Line Number","Line Description"\r\n'
+        b'"user@aps.edu","13971","8","Explorer 14 Chair"\r\n'
+        b'"user@aps.edu","13971","10","Explorer 16 Chair"\r\n'
+    )
+
+    padded = pad_requisition_line_numbers(csv_input, padding_width=4)
+    expected = (
+        b'"Entered By","Requisition Number","Line Number","Line Description"\r\n'
+        b'"user@aps.edu","13971","0008","Explorer 14 Chair"\r\n'
+        b'"user@aps.edu","13971","0010","Explorer 16 Chair"\r\n'
+    )
+
+    assert padded == expected
+
+
+def test_pad_requisition_line_numbers_preserves_already_padded_or_large_lines() -> None:
+    csv_input = (
+        b'"Line Number","Description"\r\n'
+        b'"0008","Chair"\r\n'
+        b'"10001","Big Order"\r\n'
+        b'"N/A","Invalid"\r\n'
+    )
+
+    padded = pad_requisition_line_numbers(csv_input, padding_width=4)
+    expected = (
+        b'"Line Number","Description"\r\n'
+        b'"0008","Chair"\r\n'
+        b'"10001","Big Order"\r\n'
+        b'"N/A","Invalid"\r\n'
+    )
+
+    assert padded == expected
+
+
+def test_pad_requisition_line_numbers_ignores_non_csv_or_missing_column() -> None:
+    raw_payload = b"non-csv raw bytes or no Line Number column"
+    assert pad_requisition_line_numbers(raw_payload) == raw_payload
+
+
+def test_requisitions_job_pads_line_numbers_in_uploaded_csv() -> None:
+    today = datetime.now().strftime("%Y%m%d")
+    csv_content = (
+        b'"Entered By","Requisition Number","Line Number","Line Description"\r\n'
+        b'"user@aps.edu","13971","8","Explorer 14 Chair"\r\n'
+        b'"user@aps.edu","13971","10","Explorer 16 Chair"\r\n'
+    )
+
+    class CustomPayloadEBuilder(StubEBuilder):
+        def download_file_bytes(self, download_url: str) -> bytes:
+            return csv_content
+
+    records = [
+        {
+            "Document": {
+                "FileName": f"eB_Reqs_{today}1745.csv",
+                "DownloadURL": "https://download.example/today",
+            }
+        }
+    ]
+
+    ebuilder = CustomPayloadEBuilder(records)
+    oracle_ftp = StubOracleFTP()
+
+    result = RequisitionsExportJob(
+        ebuilder, oracle_ftp, RequisitionsExportJobConfig()
+    ).run()
+
+    assert result.uploaded_count == 1
+    uploaded_bytes = oracle_ftp.upload_calls[0][0]
+    expected_bytes = (
+        b'"Entered By","Requisition Number","Line Number","Line Description"\r\n'
+        b'"user@aps.edu","13971","0008","Explorer 14 Chair"\r\n'
+        b'"user@aps.edu","13971","0010","Explorer 16 Chair"\r\n'
+    )
+
+    assert uploaded_bytes == expected_bytes
+

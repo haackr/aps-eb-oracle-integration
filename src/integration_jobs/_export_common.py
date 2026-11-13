@@ -131,6 +131,7 @@ def export_daily_documents(
     latest_only: bool,
     dry_run: bool = False,
     on_document_downloaded: Callable[[str, bytes], None] | None = None,
+    transform_payload: Callable[[str, bytes], bytes] | None = None,
 ) -> list[str]:
     records = [
         record
@@ -154,6 +155,8 @@ def export_daily_documents(
         )
         if on_document_downloaded is not None:
             on_document_downloaded(file_name, payload)
+        if transform_payload is not None:
+            payload = transform_payload(file_name, payload)
         remote_path = posixpath.join(remote_dir.strip("/"), safe_file_name(file_name))
         if dry_run:
             uploaded_paths.append(f"[DRY-RUN] {remote_path}")
